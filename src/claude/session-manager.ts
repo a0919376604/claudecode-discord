@@ -11,6 +11,7 @@ import {
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
+import { isSkipPermissionsEnabled } from "../utils/skip-permissions.js";
 import {
   createToolApprovalEmbed,
   createAskUserQuestionEmbed,
@@ -106,11 +107,13 @@ class SessionManager {
       }
     }, 15_000);
 
+    const skipPerms = isSkipPermissionsEnabled();
     const runQuery = (useResume: boolean) => query({
       prompt,
       options: {
         cwd: project.project_path,
-        permissionMode: "default",
+        permissionMode: skipPerms ? "bypassPermissions" : "default",
+        ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
         env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
         ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
         ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
