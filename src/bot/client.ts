@@ -16,6 +16,7 @@ import { L } from "../utils/i18n.js";
 // Import commands
 import * as registerCmd from "./commands/register.js";
 import * as unregisterCmd from "./commands/unregister.js";
+import * as worktreeCmd from "./commands/worktree.js";
 import * as statusCmd from "./commands/status.js";
 import * as stopCmd from "./commands/stop.js";
 import * as autoApproveCmd from "./commands/auto-approve.js";
@@ -25,7 +26,7 @@ import * as lastCmd from "./commands/last.js";
 import * as queueCmd from "./commands/queue.js";
 import * as usageCmd from "./commands/usage.js";
 
-const commands = [registerCmd, unregisterCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd];
+const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd];
 const commandMap = new Collection<
   string,
   { execute: (interaction: ChatInputCommandInteraction) => Promise<void> }
