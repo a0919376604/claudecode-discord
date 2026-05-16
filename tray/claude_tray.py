@@ -25,6 +25,7 @@ SERVICE_NAME = "claude-discord"
 BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH = os.path.join(BOT_DIR, ".env")
 LANG_PREF_FILE = os.path.join(BOT_DIR, ".tray-lang")
+SKIP_PERMS_FILE = os.path.join(BOT_DIR, ".skip-permissions")
 import urllib.request
 import json
 import re
@@ -590,6 +591,54 @@ def _edit_settings_gtk(icon=None):
 
 AUTOSTART_DIR = os.path.join(os.path.expanduser("~"), ".config", "autostart")
 AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "claude-discord-tray.desktop")
+
+
+def is_skip_permissions_enabled():
+    try:
+        with open(SKIP_PERMS_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() == "true"
+    except Exception:
+        return False
+
+
+def _write_skip_perms(enabled):
+    try:
+        with open(SKIP_PERMS_FILE, "w", encoding="utf-8") as f:
+            f.write("true" if enabled else "false")
+    except Exception:
+        pass
+
+
+def toggle_skip_permissions(icon, item):
+    currently_on = is_skip_permissions_enabled()
+    if not currently_on:
+        # Confirm only when turning ON (false → true).
+        title = L("Enable Skip Permissions?",
+                  "권한 건너뛰기를 활성화하시겠습니까?")
+        msg = L(
+            "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?",
+            "권한 건너뛰기를 켜면 Claude가 파일 쓰기, 셸 명령, 네트워크 호출을 포함한 모든 도구를 확인 없이 실행합니다. 계속할까요?"
+        )
+        try:
+            result = subprocess.run(
+                ["zenity", "--question", "--title=" + title, "--text=" + msg,
+                 "--ok-label=" + L("Enable", "활성화"),
+                 "--cancel-label=" + L("Cancel", "취소")],
+                check=False,
+            )
+            # zenity returns 0 on OK/Enable, non-zero on Cancel/close.
+            if result.returncode != 0:
+                icon.menu = create_menu()
+                return
+        except FileNotFoundError:
+            # zenity missing — refuse to enable silently is safer than enabling
+            # without confirmation. Refresh and bail.
+            icon.menu = create_menu()
+            return
+        _write_skip_perms(True)
+    else:
+        _write_skip_perms(False)
+    icon.menu = create_menu()
 
 
 def is_autostart_enabled():
@@ -1158,6 +1207,12 @@ def create_menu():
         L("Update Available - Click to Update", "업데이트 가능 - 클릭하여 업데이트"),
         perform_update, visible=update_available
     )
+    skip_perms_item = pystray.MenuItem(
+        L("Skip Permissions (⚠️ dangerous)",
+          "권한 건너뛰기 (⚠️ 위험)"),
+        toggle_skip_permissions,
+        checked=lambda item: is_skip_permissions_enabled()
+    )
     autostart_item = pystray.MenuItem(
         L("Launch on System Startup", "시스템 시작 시 자동 실행"),
         toggle_autostart, checked=lambda item: is_autostart_enabled()
@@ -1187,6 +1242,7 @@ def create_menu():
             pystray.MenuItem(L("Control Panel", "컨트롤 패널"), show_control_panel),
             pystray.MenuItem(L("Setup...", "설정..."), edit_settings),
             pystray.Menu.SEPARATOR,
+            skip_perms_item,
             autostart_item,
             lang_item,
             version_item,
@@ -1212,6 +1268,7 @@ def create_menu():
             pystray.MenuItem(L("View Log", "로그 보기"), open_log),
             pystray.MenuItem(L("Open Folder", "폴더 열기"), open_folder),
             pystray.Menu.SEPARATOR,
+            skip_perms_item,
             autostart_item,
             lang_item,
             version_item,
@@ -1235,6 +1292,7 @@ def create_menu():
             pystray.MenuItem(L("View Log", "로그 보기"), open_log),
             pystray.MenuItem(L("Open Folder", "폴더 열기"), open_folder),
             pystray.Menu.SEPARATOR,
+            skip_perms_item,
             autostart_item,
             lang_item,
             version_item,
