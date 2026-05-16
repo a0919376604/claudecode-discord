@@ -208,7 +208,9 @@ class SessionManager {
                 };
               }
 
-              answers[q.header] = answer;
+              // AskUserQuestionOutput.answers is keyed by the full question text,
+              // not the short header chip (see sdk-tools.d.ts AskUserQuestionOutput).
+              answers[q.question] = answer;
             }
 
             updateSessionStatus(channelId, "online");
