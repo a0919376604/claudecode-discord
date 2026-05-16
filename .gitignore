@@ -19,5 +19,6 @@ tray/ClaudeBotTray.exe
 ClaudeBot.exe
 com.claude-discord.plist
 .tray-lang
+.skip-permissions
 usage-debug.log
 usage-error.log

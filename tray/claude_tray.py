@@ -619,20 +619,31 @@ def toggle_skip_permissions(icon, item):
             "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?",
             "권한 건너뛰기를 켜면 Claude가 파일 쓰기, 셸 명령, 네트워크 호출을 포함한 모든 도구를 확인 없이 실행합니다. 계속할까요?"
         )
-        try:
-            result = subprocess.run(
-                ["zenity", "--question", "--title=" + title, "--text=" + msg,
-                 "--ok-label=" + L("Enable", "활성화"),
-                 "--cancel-label=" + L("Cancel", "취소")],
-                check=False,
+        # Try zenity first, then yad — both return 0 on Enable, non-zero on Cancel/close.
+        confirmed = None
+        for cmd in (
+            ["zenity", "--question", "--title=" + title, "--text=" + msg,
+             "--ok-label=" + L("Enable", "활성화"),
+             "--cancel-label=" + L("Cancel", "취소")],
+            ["yad", "--question", "--title=" + title, "--text=" + msg,
+             "--button=" + L("Cancel:1", "취소:1"),
+             "--button=" + L("Enable:0", "활성화:0")],
+        ):
+            try:
+                result = subprocess.run(cmd, check=False)
+                confirmed = result.returncode == 0
+                break
+            except FileNotFoundError:
+                continue
+        if confirmed is None:
+            # Neither zenity nor yad installed — refuse to enable silently rather
+            # than bypass the confirmation we promised the user.
+            sys.stderr.write(
+                "[tray] Skip Permissions toggle requires zenity or yad; install one to enable.\n"
             )
-            # zenity returns 0 on OK/Enable, non-zero on Cancel/close.
-            if result.returncode != 0:
-                icon.menu = create_menu()
-                return
-        except FileNotFoundError:
-            # zenity missing — refuse to enable silently is safer than enabling
-            # without confirmation. Refresh and bail.
+            icon.menu = create_menu()
+            return
+        if not confirmed:
             icon.menu = create_menu()
             return
         _write_skip_perms(True)

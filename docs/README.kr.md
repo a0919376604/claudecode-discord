@@ -214,6 +214,7 @@ claudecode-discord/
 
 - `.env` 파일에 봇 토큰이 포함되어 있으므로 **절대 외부에 공유하지 마세요**. 유출 시 Discord Developer Portal에서 즉시 Reset Token
 - `auto-approve` 모드는 편리하지만, Claude가 의도치 않은 작업을 수행할 수 있으므로 신뢰하는 프로젝트에서만 사용을 권장합니다
+- ⚠️ **권한 건너뛰기** (트레이 앱 토글)를 활성화하면 봇이 `permissionMode: 'bypassPermissions'`로 Claude를 실행합니다 (CLI의 `--dangerously-skip-permissions`와 동등). Discord 승인 버튼, `AskUserQuestion` 팝업, 도구별 비용 임베드가 모두 사라지고 Claude가 모든 도구를 확인 없이 실행합니다. 모든 채널에 전역으로 적용되며 다음 메시지부터 즉시 반영되고, 최초 활성화 시 확인 대화상자가 표시됩니다. Claude가 감독 없이 수정해도 되는 머신과 프로젝트에서만 활성화하세요.
 
 ## 플랫폼별 간편 실행
 
