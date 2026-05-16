@@ -17,6 +17,7 @@ export function initDatabase(): void {
       project_path TEXT NOT NULL,
       guild_id TEXT NOT NULL,
       auto_approve INTEGER DEFAULT 0,
+      source_path TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -29,6 +30,15 @@ export function initDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration: add source_path column for installations created before /worktree.
+  // Safe to re-run; only ALTERs when the column is missing.
+  const cols = db
+    .prepare("PRAGMA table_info(projects)")
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "source_path")) {
+    db.exec("ALTER TABLE projects ADD COLUMN source_path TEXT");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -46,6 +56,19 @@ export function registerProject(
     VALUES (?, ?, ?)
   `);
   stmt.run(channelId, projectPath, guildId);
+}
+
+export function registerWorktreeProject(
+  channelId: string,
+  projectPath: string,
+  guildId: string,
+  sourcePath: string,
+): void {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO projects (channel_id, project_path, guild_id, source_path)
+    VALUES (?, ?, ?, ?)
+  `);
+  stmt.run(channelId, projectPath, guildId, sourcePath);
 }
 
 export function unregisterProject(channelId: string): void {

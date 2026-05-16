@@ -15,6 +15,7 @@ vi.mock("better-sqlite3", async () => {
 import {
   initDatabase,
   registerProject,
+  registerWorktreeProject,
   unregisterProject,
   getProject,
   getAllProjects,
@@ -80,6 +81,19 @@ describe("database", () => {
       setAutoApprove("ch1", false);
       expect(getProject("ch1")!.auto_approve).toBe(0);
     });
+
+    it("registerProject sets source_path to NULL by default", () => {
+      registerProject("ch1", "/p1", "guild1");
+      const project = getProject("ch1");
+      expect(project!.source_path).toBeNull();
+    });
+
+    it("registerWorktreeProject stores source_path", () => {
+      registerWorktreeProject("ch1", "/wt/path", "guild1", "/src/path");
+      const project = getProject("ch1");
+      expect(project!.project_path).toBe("/wt/path");
+      expect(project!.source_path).toBe("/src/path");
+    });
   });
 
   // ─── Session CRUD ───
@@ -130,5 +144,38 @@ describe("database", () => {
       registerProject("ch2", "/p2", "guild2");
       expect(getAllSessions("guild2")).toHaveLength(0);
     });
+  });
+});
+
+describe("source_path migration", () => {
+  it("ALTER TABLE adds source_path when missing", async () => {
+    const Database = (await import("better-sqlite3")).default;
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE projects (
+        channel_id TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        auto_approve INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    const before = db
+      .prepare("PRAGMA table_info(projects)")
+      .all() as Array<{ name: string }>;
+    expect(before.some((c) => c.name === "source_path")).toBe(false);
+
+    // Mirror the migration block from initDatabase().
+    const cols = db
+      .prepare("PRAGMA table_info(projects)")
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "source_path")) {
+      db.exec("ALTER TABLE projects ADD COLUMN source_path TEXT");
+    }
+
+    const after = db
+      .prepare("PRAGMA table_info(projects)")
+      .all() as Array<{ name: string }>;
+    expect(after.some((c) => c.name === "source_path")).toBe(true);
   });
 });

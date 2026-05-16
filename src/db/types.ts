@@ -5,6 +5,7 @@ export interface Project {
   project_path: string;
   guild_id: string;
   auto_approve: number; // 0 or 1
+  source_path: string | null; // NULL for /register, absolute path for /worktree
   created_at: string;
 }
 
