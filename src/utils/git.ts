@@ -85,3 +85,26 @@ export function removeWorktree(repoDir: string, worktreePath: string): void {
     throw new Error(`git worktree remove failed: ${gitErrorMessage(err)}`);
   }
 }
+
+/**
+ * Pick the next available `<basename>-wt-N` (N = 1, 2, 3, ...) such that both
+ * the folder at `<source-parent>/<basename>-wt-N` does not exist AND the
+ * branch `<basename>-wt-N` does not exist in the source repo.
+ *
+ * Returns the absolute worktree path and the matching branch name.
+ */
+export function pickNextWorktreeName(sourceRepo: string): {
+  branchName: string;
+  worktreePath: string;
+} {
+  const basename = path.basename(sourceRepo);
+  const parent = path.dirname(sourceRepo);
+  for (let n = 1; n < 10_000; n++) {
+    const branchName = `${basename}-wt-${n}`;
+    const worktreePath = path.join(parent, branchName);
+    if (!fs.existsSync(worktreePath) && !branchExists(sourceRepo, branchName)) {
+      return { branchName, worktreePath };
+    }
+  }
+  throw new Error(`Could not find an available worktree name for ${sourceRepo}`);
+}

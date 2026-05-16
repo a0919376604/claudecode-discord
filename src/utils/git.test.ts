@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { isGitRepo, branchExists, addWorktree, removeWorktree } from "./git.js";
+import { isGitRepo, branchExists, addWorktree, removeWorktree, pickNextWorktreeName } from "./git.js";
 
 let tmpRoot: string;
 let repoDir: string;
@@ -94,5 +94,57 @@ describe("removeWorktree", () => {
     const notAWorktree = path.join(tmpRoot, "not-a-worktree");
     fs.mkdirSync(notAWorktree);
     expect(() => removeWorktree(repoDir, notAWorktree)).toThrow(/worktree/i);
+  });
+});
+
+describe("pickNextWorktreeName", () => {
+  it("returns -wt-1 when no candidate exists", () => {
+    const isoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wt-name-"));
+    const repo = path.join(isoRoot, "myrepo");
+    fs.mkdirSync(repo);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "f"), "x");
+    execFileSync("git", ["-C", repo, "add", "."]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i"]);
+
+    const { branchName, worktreePath } = pickNextWorktreeName(repo);
+    expect(branchName).toBe("myrepo-wt-1");
+    expect(worktreePath).toBe(path.join(isoRoot, "myrepo-wt-1"));
+
+    fs.rmSync(isoRoot, { recursive: true, force: true });
+  });
+
+  it("skips numbers whose folder already exists", () => {
+    const isoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wt-name-"));
+    const repo = path.join(isoRoot, "myrepo");
+    fs.mkdirSync(repo);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "f"), "x");
+    execFileSync("git", ["-C", repo, "add", "."]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i"]);
+
+    fs.mkdirSync(path.join(isoRoot, "myrepo-wt-1"));
+    fs.mkdirSync(path.join(isoRoot, "myrepo-wt-2"));
+
+    const { branchName } = pickNextWorktreeName(repo);
+    expect(branchName).toBe("myrepo-wt-3");
+
+    fs.rmSync(isoRoot, { recursive: true, force: true });
+  });
+
+  it("skips numbers whose branch already exists", () => {
+    const isoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wt-name-"));
+    const repo = path.join(isoRoot, "myrepo");
+    fs.mkdirSync(repo);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    fs.writeFileSync(path.join(repo, "f"), "x");
+    execFileSync("git", ["-C", repo, "add", "."]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "i"]);
+    execFileSync("git", ["-C", repo, "branch", "myrepo-wt-1"]);
+
+    const { branchName } = pickNextWorktreeName(repo);
+    expect(branchName).toBe("myrepo-wt-2");
+
+    fs.rmSync(isoRoot, { recursive: true, force: true });
   });
 });
