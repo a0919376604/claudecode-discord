@@ -32,3 +32,39 @@ export function branchExists(repoDir: string, branch: string): boolean {
     return false;
   }
 }
+
+/**
+ * Create a new worktree at `worktreePath` checked out to a brand-new branch
+ * `branchName` based on the source repo's current HEAD.
+ * Throws if the target path already exists or if git fails (e.g. branch
+ * exists, source isn't a repo). The pre-check protects against newer git
+ * versions that silently accept an existing empty directory as the target.
+ */
+export function addWorktree(
+  repoDir: string,
+  branchName: string,
+  worktreePath: string,
+): void {
+  if (fs.existsSync(worktreePath)) {
+    throw new Error(`worktree path already exists: ${worktreePath}`);
+  }
+  execFileSync(
+    "git",
+    ["-C", repoDir, "worktree", "add", "-b", branchName, worktreePath],
+    { stdio: "pipe" },
+  );
+}
+
+/**
+ * Remove a worktree using `git worktree remove --force`, which deletes the
+ * folder, cleans up git's worktree metadata, and discards any uncommitted
+ * changes inside the worktree. The source repo and its branches are left
+ * untouched (the branch the worktree was checked out to is preserved).
+ */
+export function removeWorktree(repoDir: string, worktreePath: string): void {
+  execFileSync(
+    "git",
+    ["-C", repoDir, "worktree", "remove", "--force", worktreePath],
+    { stdio: "pipe" },
+  );
+}

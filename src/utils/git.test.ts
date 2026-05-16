@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { isGitRepo, branchExists } from "./git.js";
+import { isGitRepo, branchExists, addWorktree, removeWorktree } from "./git.js";
 
 let tmpRoot: string;
 let repoDir: string;
@@ -47,5 +47,46 @@ describe("branchExists", () => {
 
   it("returns false for a non-existent branch", () => {
     expect(branchExists(repoDir, "does-not-exist")).toBe(false);
+  });
+});
+
+describe("addWorktree", () => {
+  it("creates a worktree at the given path with the given new branch", () => {
+    const wtPath = path.join(tmpRoot, "repo-wt-test");
+    addWorktree(repoDir, "feat-test", wtPath);
+
+    expect(fs.existsSync(wtPath)).toBe(true);
+    expect(fs.existsSync(path.join(wtPath, ".git"))).toBe(true);
+    expect(fs.existsSync(path.join(wtPath, "README.md"))).toBe(true);
+
+    // Branch exists in source repo
+    expect(branchExists(repoDir, "feat-test")).toBe(true);
+  });
+
+  it("throws when the worktree path already exists", () => {
+    const wtPath = path.join(tmpRoot, "already-there");
+    fs.mkdirSync(wtPath);
+    expect(() => addWorktree(repoDir, "feat-collision", wtPath)).toThrow();
+  });
+});
+
+describe("removeWorktree", () => {
+  it("removes a worktree folder and git metadata", () => {
+    const wtPath = path.join(tmpRoot, "repo-wt-rm");
+    addWorktree(repoDir, "feat-rm", wtPath);
+    expect(fs.existsSync(wtPath)).toBe(true);
+
+    removeWorktree(repoDir, wtPath);
+    expect(fs.existsSync(wtPath)).toBe(false);
+  });
+
+  it("force-removes even with uncommitted changes", () => {
+    const wtPath = path.join(tmpRoot, "repo-wt-dirty");
+    addWorktree(repoDir, "feat-dirty", wtPath);
+    fs.writeFileSync(path.join(wtPath, "scratch.txt"), "uncommitted\n");
+
+    // Should not throw despite dirty state.
+    removeWorktree(repoDir, wtPath);
+    expect(fs.existsSync(wtPath)).toBe(false);
   });
 });
