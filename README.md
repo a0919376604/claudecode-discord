@@ -215,6 +215,7 @@ The bot runs entirely on your own PC/server. No external servers involved, and n
 
 - The `.env` file contains your bot token — **never share it publicly.** If compromised, immediately Reset Token in Discord Developer Portal
 - `auto-approve` mode is convenient but may allow Claude to perform unintended actions — use only on trusted projects
+- ⚠️ **Skip Permissions** (tray-app toggle) makes the bot launch Claude with `permissionMode: 'bypassPermissions'` — equivalent to `--dangerously-skip-permissions`. Discord approval buttons, `AskUserQuestion` popups, and per-tool cost embeds all disappear; Claude runs every tool without confirmation. Global across all channels, takes effect on the next message, first-enable shows a confirmation dialog. Only enable on machines and for projects you would let Claude modify unsupervised.
 
 ## Quick Start by Platform
 
