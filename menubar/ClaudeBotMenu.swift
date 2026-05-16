@@ -1102,6 +1102,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Separator
         elements.append((createSeparator(width: contentWidth), 12))
 
+        // Skip Permissions checkbox (dangerous)
+        let skipPermsBtn = NSButton(checkboxWithTitle: L("Skip Permissions (⚠️ dangerous)", "권한 건너뛰기 (⚠️ 위험)"), target: self, action: #selector(toggleSkipPermissions))
+        skipPermsBtn.state = isSkipPermissionsEnabled() ? .on : .off
+        skipPermsBtn.font = NSFont.systemFont(ofSize: 12)
+        elements.append((skipPermsBtn, 26))
+
         // Auto-start checkbox
         let autoStartBtn = NSButton(checkboxWithTitle: L("Launch on System Startup", "시스템 시작 시 자동 실행"), target: self, action: #selector(toggleAutoStart))
         autoStartBtn.state = isAutoStartEnabled() ? .on : .off
@@ -1593,6 +1599,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             writeSkipPermsFlag(false)
         }
         buildMenu()
+        rebuildControlPanel()
     }
 
     private func writeSkipPermsFlag(_ enabled: Bool) {
