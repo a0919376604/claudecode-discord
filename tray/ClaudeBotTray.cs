@@ -48,6 +48,7 @@ class ClaudeBotTray : Form
 
     // Language support
     private string langPrefFile;
+    private string skipPermsFile;
     private bool isKorean = false;
 
     public ClaudeBotTray()
@@ -55,6 +56,7 @@ class ClaudeBotTray : Form
         botDir = Path.GetDirectoryName(Path.GetDirectoryName(Application.ExecutablePath));
         envPath = Path.Combine(botDir, ".env");
         langPrefFile = Path.Combine(botDir, ".tray-lang");
+        skipPermsFile = Path.Combine(botDir, ".skip-permissions");
 
         // Load saved language preference
         try
@@ -623,6 +625,14 @@ class ClaudeBotTray : Form
 
         menu.Items.Add(new ToolStripSeparator());
 
+        // Skip permissions toggle
+        var skipPermsItem = new ToolStripMenuItem(
+            L("Skip Permissions (⚠️ dangerous)",
+              "권한 건너뛰기 (⚠️ 위험)"));
+        skipPermsItem.Checked = IsSkipPermissionsEnabled();
+        skipPermsItem.Click += ToggleSkipPermissions;
+        menu.Items.Add(skipPermsItem);
+
         // Auto-start toggle
         var autoStartItem = new ToolStripMenuItem(L("Auto Run on Startup", "시작 시 자동 실행"));
         autoStartItem.Checked = IsAutoStartEnabled();
@@ -787,6 +797,50 @@ class ClaudeBotTray : Form
         catch { }
         string lockFile = Path.Combine(botDir, ".bot.lock");
         try { File.Delete(lockFile); } catch { }
+    }
+
+    private bool IsSkipPermissionsEnabled()
+    {
+        try
+        {
+            if (!File.Exists(skipPermsFile)) return false;
+            string contents = File.ReadAllText(skipPermsFile).Trim();
+            return contents == "true";
+        }
+        catch { return false; }
+    }
+
+    private void WriteSkipPermsFlag(bool enabled)
+    {
+        try { File.WriteAllText(skipPermsFile, enabled ? "true" : "false"); }
+        catch { }
+    }
+
+    private void ToggleSkipPermissions(object sender, EventArgs e)
+    {
+        bool currentlyOn = IsSkipPermissionsEnabled();
+        if (!currentlyOn)
+        {
+            // Confirm only when turning ON (false → true).
+            string title = L("Enable Skip Permissions?",
+                             "권한 건너뛰기를 활성화하시겠습니까?");
+            string msg = L(
+                "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?",
+                "권한 건너뛰기를 켜면 Claude가 파일 쓰기, 셸 명령, 네트워크 호출을 포함한 모든 도구를 확인 없이 실행합니다. 계속할까요?"
+            );
+            var result = MessageBox.Show(msg, title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (result != DialogResult.Yes)
+            {
+                BuildMenu();
+                return;
+            }
+            WriteSkipPermsFlag(true);
+        }
+        else
+        {
+            WriteSkipPermsFlag(false);
+        }
+        BuildMenu();
     }
 
     private bool IsAutoStartEnabled()
