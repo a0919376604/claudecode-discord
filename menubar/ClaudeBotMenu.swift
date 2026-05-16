@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var menubarPlistDst: String
     private var envPath: String
     private var langPrefFile: String
+    private var skipPermsFile: String
     private var currentVersion: String = "unknown"
     private var updateAvailable: Bool = false
     private var isKorean: Bool = false
@@ -37,6 +38,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menubarPlistDst = NSHomeDirectory() + "/Library/LaunchAgents/com.claude-discord-menubar.plist"
         envPath = botDir + "/.env"
         langPrefFile = botDir + "/.tray-lang"
+        skipPermsFile = botDir + "/.skip-permissions"
         super.init()
 
         // Load saved language preference
@@ -458,6 +460,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+
+        // Skip Permissions toggle (dangerous)
+        let skipPermsItem = NSMenuItem(
+            title: L("Skip Permissions (⚠️ dangerous)",
+                     "권한 건너뛰기 (⚠️ 위험)"),
+            action: #selector(toggleSkipPermissions),
+            keyEquivalent: "")
+        skipPermsItem.target = self
+        skipPermsItem.state = isSkipPermissionsEnabled() ? .on : .off
+        menu.addItem(skipPermsItem)
 
         // Auto-start toggle
         let autoStartItem = NSMenuItem(title: L("Launch on System Startup", "시스템 시작 시 자동 실행"), action: #selector(toggleAutoStart), keyEquivalent: "")
@@ -1549,6 +1561,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         buildMenu()
         rebuildControlPanel()
+    }
+
+    private func isSkipPermissionsEnabled() -> Bool {
+        guard let contents = try? String(contentsOfFile: skipPermsFile, encoding: .utf8) else {
+            return false
+        }
+        return contents.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
+    @objc private func toggleSkipPermissions() {
+        let currentlyOn = isSkipPermissionsEnabled()
+        if !currentlyOn {
+            // Confirm only when turning ON (false → true).
+            let alert = NSAlert()
+            alert.messageText = L("Enable Skip Permissions?",
+                                  "권한 건너뛰기를 활성화하시겠습니까?")
+            alert.informativeText = L(
+                "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?",
+                "권한 건너뛰기를 켜면 Claude가 파일 쓰기, 셸 명령, 네트워크 호출을 포함한 모든 도구를 확인 없이 실행합니다. 계속할까요?"
+            )
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: L("Cancel", "취소"))
+            alert.addButton(withTitle: L("Enable", "활성화"))
+            let response = alert.runModal()
+            // First button (Cancel) → .alertFirstButtonReturn
+            // Second button (Enable) → .alertSecondButtonReturn
+            guard response == .alertSecondButtonReturn else { return }
+            writeSkipPermsFlag(true)
+        } else {
+            writeSkipPermsFlag(false)
+        }
+        buildMenu()
+    }
+
+    private func writeSkipPermsFlag(_ enabled: Bool) {
+        let content = enabled ? "true" : "false"
+        try? content.write(toFile: skipPermsFile, atomically: true, encoding: .utf8)
     }
 
     private func isAutoStartEnabled() -> Bool {
