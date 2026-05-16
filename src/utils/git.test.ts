@@ -89,4 +89,10 @@ describe("removeWorktree", () => {
     removeWorktree(repoDir, wtPath);
     expect(fs.existsSync(wtPath)).toBe(false);
   });
+
+  it("throws with git's stderr message when target isn't a worktree", () => {
+    const notAWorktree = path.join(tmpRoot, "not-a-worktree");
+    fs.mkdirSync(notAWorktree);
+    expect(() => removeWorktree(repoDir, notAWorktree)).toThrow(/worktree/i);
+  });
 });

@@ -2,6 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
+function gitErrorMessage(err: unknown): string {
+  const e = err as { stderr?: Buffer; stdout?: Buffer; message?: string };
+  const stderr = e.stderr?.toString().trim();
+  if (stderr) return stderr;
+  const stdout = e.stdout?.toString().trim();
+  if (stdout) return stdout;
+  return e.message ?? String(err);
+}
+
 /**
  * Returns true if `dir` exists and contains a `.git` entry (either a directory
  * for a normal repo, or a file for a linked worktree).
@@ -48,11 +57,15 @@ export function addWorktree(
   if (fs.existsSync(worktreePath)) {
     throw new Error(`worktree path already exists: ${worktreePath}`);
   }
-  execFileSync(
-    "git",
-    ["-C", repoDir, "worktree", "add", "-b", branchName, worktreePath],
-    { stdio: "pipe" },
-  );
+  try {
+    execFileSync(
+      "git",
+      ["-C", repoDir, "worktree", "add", "-b", branchName, worktreePath],
+      { stdio: "pipe" },
+    );
+  } catch (err) {
+    throw new Error(`git worktree add failed: ${gitErrorMessage(err)}`);
+  }
 }
 
 /**
@@ -62,9 +75,13 @@ export function addWorktree(
  * untouched (the branch the worktree was checked out to is preserved).
  */
 export function removeWorktree(repoDir: string, worktreePath: string): void {
-  execFileSync(
-    "git",
-    ["-C", repoDir, "worktree", "remove", "--force", worktreePath],
-    { stdio: "pipe" },
-  );
+  try {
+    execFileSync(
+      "git",
+      ["-C", repoDir, "worktree", "remove", "--force", worktreePath],
+      { stdio: "pipe" },
+    );
+  } catch (err) {
+    throw new Error(`git worktree remove failed: ${gitErrorMessage(err)}`);
+  }
 }
