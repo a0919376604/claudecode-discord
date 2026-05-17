@@ -17,6 +17,12 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
+  // Maximum minutes a single Claude session may run before the bot
+  // forcibly interrupts it. Default 60 — large enough for substantial
+  // refactors, small enough to bound runaway token cost on a stuck
+  // prompt. Set to 0 to disable (no ceiling). Coerced via Number() at the
+  // call site to avoid forcing every test fixture to pass a string.
+  MAX_SESSION_DURATION_MIN: z.coerce.number().int().nonnegative().default(60),
 });
 
 export type Config = z.infer<typeof envSchema>;

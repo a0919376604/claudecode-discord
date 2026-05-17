@@ -168,6 +168,47 @@ class SessionManager {
     // edit the original message, the progress message, or stay quiet.
     const heartbeatInterval = setInterval(surfaceProgress, 15_000);
 
+    // Hard ceiling on session duration. Bounds runaway token cost when a
+    // prompt sends Claude into a long loop (the original failure mode the
+    // user reported was an hour-long silent session). Set
+    // MAX_SESSION_DURATION_MIN=0 to disable the ceiling for trusted local
+    // dev. The timeout looks up the *current* queryInstance via
+    // this.sessions so it interrupts the right one even after a
+    // resume-retry has swapped instances.
+    const maxDurationMin = getConfig().MAX_SESSION_DURATION_MIN;
+    const sessionsRef = this.sessions;
+    const durationTimer: NodeJS.Timeout | null = maxDurationMin > 0
+      ? setTimeout(async () => {
+          console.warn(
+            `[session] Max duration ${maxDurationMin}min reached for ${channelId}, interrupting`,
+          );
+          const active = sessionsRef.get(channelId);
+          if (active) {
+            try {
+              await active.queryInstance.interrupt();
+            } catch (e) {
+              console.warn(
+                `[timeout] interrupt failed for ${channelId}:`,
+                e instanceof Error ? e.message : e,
+              );
+            }
+          }
+          try {
+            await channel.send(
+              L(
+                `⏱️ Session exceeded ${maxDurationMin}-minute max duration and was interrupted to bound runaway token cost. Raise MAX_SESSION_DURATION_MIN (or set 0 to disable) if your workflow legitimately needs longer.`,
+                `⏱️ 세션이 ${maxDurationMin}분 최대 시간을 초과하여 토큰 비용 폭주를 막기 위해 중단되었습니다. 더 긴 시간이 필요하면 MAX_SESSION_DURATION_MIN을 늘리거나 0으로 설정해 비활성화하세요.`,
+              ),
+            );
+          } catch (e) {
+            console.warn(
+              `[timeout] Failed to send timeout message for ${channelId}:`,
+              e instanceof Error ? e.message : e,
+            );
+          }
+        }, maxDurationMin * 60_000)
+      : null;
+
     const skipPerms = isSkipPermissionsEnabled();
     const runQuery = (useResume: boolean) => query({
       prompt,
@@ -537,6 +578,7 @@ class SessionManager {
       updateSessionStatus(channelId, "offline");
     } finally {
       clearInterval(heartbeatInterval);
+      if (durationTimer) clearTimeout(durationTimer);
       this.sessions.delete(channelId);
 
       // Strip the Stop button from any lingering progress message so the

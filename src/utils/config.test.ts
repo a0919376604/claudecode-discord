@@ -13,6 +13,7 @@ describe("config", () => {
     // Clear optional vars to use defaults
     delete process.env.RATE_LIMIT_PER_MINUTE;
     delete process.env.SHOW_COST;
+    delete process.env.MAX_SESSION_DURATION_MIN;
   });
 
   afterEach(() => {
@@ -33,6 +34,27 @@ describe("config", () => {
     const config = loadConfig();
     expect(config.RATE_LIMIT_PER_MINUTE).toBe(10);
     expect(config.SHOW_COST).toBe(true);
+    // 60 min is the default ceiling on a single session — long enough for
+    // big refactors, short enough to bound runaway token cost from a
+    // misbehaving prompt. Override via env when needed.
+    expect(config.MAX_SESSION_DURATION_MIN).toBe(60);
+  });
+
+  it("coerces MAX_SESSION_DURATION_MIN to integer", async () => {
+    process.env.MAX_SESSION_DURATION_MIN = "30";
+    const { loadConfig } = await import("./config.js");
+    const config = loadConfig();
+    expect(config.MAX_SESSION_DURATION_MIN).toBe(30);
+  });
+
+  it("accepts MAX_SESSION_DURATION_MIN=0 to disable the timeout", async () => {
+    // Some users (especially trusted local dev) genuinely want no ceiling
+    // and find a forced abort more annoying than a runaway session. 0 is
+    // the canonical "off" value here.
+    process.env.MAX_SESSION_DURATION_MIN = "0";
+    const { loadConfig } = await import("./config.js");
+    const config = loadConfig();
+    expect(config.MAX_SESSION_DURATION_MIN).toBe(0);
   });
 
   it("parses ALLOWED_USER_IDS with spaces", async () => {
