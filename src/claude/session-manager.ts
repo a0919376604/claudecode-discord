@@ -18,6 +18,7 @@ import {
   createResultEmbed,
   createStopButton,
   createCompletedButton,
+  createFinishFeatureButton,
   splitMessage,
   type AskQuestionData,
 } from "./output-formatter.js";
@@ -496,7 +497,10 @@ class SessionManager {
                 getConfig().SHOW_COST,
                 isError,
               );
-              await channel.send({ embeds: [resultEmbed] });
+              await channel.send({
+                embeds: [resultEmbed],
+                components: [createFinishFeatureButton(channelId)],
+              });
 
               // Detect auth/credit errors in result and suggest re-login
               const resultAuthKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
@@ -574,7 +578,17 @@ class SessionManager {
         );
       }
 
-      await channel.send(`❌ ${errMsg}`);
+      const resultEmbed = createResultEmbed(
+        errMsg,
+        0,
+        Date.now() - startTime,
+        getConfig().SHOW_COST,
+        true,
+      );
+      await channel.send({
+        embeds: [resultEmbed],
+        components: [createFinishFeatureButton(channelId)],
+      });
       updateSessionStatus(channelId, "offline");
     } finally {
       clearInterval(heartbeatInterval);

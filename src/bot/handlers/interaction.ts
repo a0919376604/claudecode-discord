@@ -4,12 +4,13 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
-import { upsertSession, getProject, getSession } from "../../db/database.js";
+import { upsertSession, getProject, getSession, clearSessionId } from "../../db/database.js";
 import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js";
 import { L } from "../../utils/i18n.js";
 
@@ -51,6 +52,72 @@ export async function handleButtonInteraction(
         content: L("No active session.", "활성 세션이 없습니다."),
         ephemeral: true,
       });
+    }
+    return;
+  }
+
+  // Handle Finish Feature button
+  if (action === "finish-feature") {
+    const channelId = interaction.channelId;
+    const project = getProject(channelId);
+    if (!project) {
+      await interaction.reply({
+        content: L(
+          "❌ This channel is no longer registered.",
+          "❌ 이 채널은 더 이상 등록되어 있지 않습니다.",
+        ),
+      });
+      return;
+    }
+
+    clearSessionId(channelId);
+
+    const clearedNote = L(
+      "History cleared; next message starts fresh.",
+      "기록이 삭제되었습니다; 다음 메시지는 새 세션으로 시작합니다.",
+    );
+    const updatedEmbeds = interaction.message.embeds.map((embed) => {
+      const data = embed.toJSON();
+      const currentFooter = data.footer?.text;
+      const footerText = currentFooter
+        ? currentFooter.includes(clearedNote)
+          ? currentFooter
+          : `${currentFooter} | ${clearedNote}`
+        : clearedNote;
+
+      return EmbedBuilder.from(data).setFooter({ text: footerText });
+    });
+    const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`finish-feature:${channelId}`)
+        .setLabel(L("Feature finished", "기능 완료됨"))
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("✅")
+        .setDisabled(true),
+    );
+    const confirmation = L(
+      "🆕 History cleared. The next message will start a fresh Claude session.\n(Recover the old session with /sessions if this was a mistake.)",
+      "🆕 기록이 삭제되었습니다. 다음 메시지는 새로운 Claude 세션으로 시작합니다.\n(실수였다면 /sessions로 이전 세션을 복구할 수 있습니다.)",
+    );
+
+    let updated = false;
+    try {
+      await interaction.update({
+        embeds: updatedEmbeds,
+        components: [disabledRow],
+      });
+      updated = true;
+    } catch (e) {
+      console.warn(
+        `[finish-feature] Failed to update button for ${channelId}:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+
+    if (updated || interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: confirmation });
+    } else {
+      await interaction.reply({ content: confirmation });
     }
     return;
   }

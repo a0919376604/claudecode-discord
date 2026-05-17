@@ -24,6 +24,7 @@ import {
   getSession,
   updateSessionStatus,
   getAllSessions,
+  clearSessionId,
 } from "./database.js";
 
 describe("database", () => {
@@ -143,6 +144,35 @@ describe("database", () => {
     it("getAllSessions returns empty for guild with no sessions", () => {
       registerProject("ch2", "/p2", "guild2");
       expect(getAllSessions("guild2")).toHaveLength(0);
+    });
+
+    it("clearSessionId sets session_id to NULL for the right channel", () => {
+      registerProject("ch2", "/p2", "guild1");
+      upsertSession("s1", "ch1", "sdk-session-1", "online");
+      upsertSession("s2", "ch2", "sdk-session-2", "online");
+
+      clearSessionId("ch1");
+
+      expect(getSession("ch1")!.session_id).toBeNull();
+      expect(getSession("ch2")!.session_id).toBe("sdk-session-2");
+    });
+
+    it("clearSessionId on unknown channel is a no-op", () => {
+      expect(() => clearSessionId("missing")).not.toThrow();
+    });
+
+    it("clearSessionId preserves the existing session row fields", () => {
+      upsertSession("s1", "ch1", "sdk-session-1", "waiting");
+
+      clearSessionId("ch1");
+
+      const session = getSession("ch1");
+      expect(session).toBeDefined();
+      expect(session!.id).toBe("s1");
+      expect(session!.channel_id).toBe("ch1");
+      expect(session!.session_id).toBeNull();
+      expect(session!.status).toBe("waiting");
+      expect(session!.last_activity).toBeTruthy();
     });
   });
 });

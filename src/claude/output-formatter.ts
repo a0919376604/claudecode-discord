@@ -84,6 +84,18 @@ export function createCompletedButton(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
+export function createFinishFeatureButton(
+  channelId: string,
+): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`finish-feature:${channelId}`)
+      .setLabel(L("Finish Feature", "기능 완료"))
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("✅"),
+  );
+}
+
 export function createToolApprovalEmbed(
   toolName: string,
   input: Record<string, unknown>,

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { ButtonStyle } from "discord.js";
 
 // Mock i18n to always return English strings (regardless of .tray-lang file)
 vi.mock("../utils/i18n.js", () => ({
@@ -13,6 +14,7 @@ import {
   createAskUserQuestionEmbed,
   createStopButton,
   createCompletedButton,
+  createFinishFeatureButton,
   type AskQuestionData,
 } from "./output-formatter.js";
 
@@ -321,5 +323,17 @@ describe("createCompletedButton", () => {
   it("creates disabled button", () => {
     const row = createCompletedButton();
     expect(row.components[0].data).toHaveProperty("disabled", true);
+  });
+});
+
+describe("createFinishFeatureButton", () => {
+  it("creates one success button with localized label and channel customId", () => {
+    const row = createFinishFeatureButton("ch-123");
+    expect(row.components).toHaveLength(1);
+    expect(row.components[0].data).toMatchObject({
+      custom_id: "finish-feature:ch-123",
+      label: "Finish Feature",
+      style: ButtonStyle.Success,
+    });
   });
 });
