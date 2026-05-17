@@ -208,6 +208,38 @@ describe("createResultEmbed", () => {
     const embed = createResultEmbed("x".repeat(5000), 0, 0);
     expect(embed.data.description!.length).toBeLessThanOrEqual(4000);
   });
+
+  // ─── Error result handling (Fix #2) ───
+
+  it("uses success styling by default (green + ✅ Task Complete)", () => {
+    const embed = createResultEmbed("Done", 0, 0);
+    expect(embed.data.color).toBe(0x00ff00);
+    expect(embed.data.title).toContain("Task Complete");
+  });
+
+  it("uses error styling when isError is true (red + ❌ Task Failed)", () => {
+    // SDKResultError comes through with subtype like "error_during_execution"
+    // and an errors[] array. The user should clearly see this as a failure,
+    // not as a normal completion — the prior bug was that error results
+    // skipped this embed entirely and showed only a raw "❌ ..." message.
+    const embed = createResultEmbed(
+      "MaxFileReadTokenExceededError; File does not exist",
+      0.05,
+      8000,
+      true,
+      true, // isError
+    );
+    expect(embed.data.color).toBe(0xff0000);
+    expect(embed.data.title).toContain("Task Failed");
+    expect(embed.data.description).toContain("MaxFileReadTokenExceededError");
+  });
+
+  it("still respects showCost flag when isError is true", () => {
+    const embed = createResultEmbed("boom", 0.1, 1000, false, true);
+    const footer = embed.data.footer?.text ?? "";
+    expect(footer).not.toContain("Cost");
+    expect(footer).toContain("Duration");
+  });
 });
 
 // ─── createAskUserQuestionEmbed ───

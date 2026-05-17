@@ -394,13 +394,36 @@ class SessionManager {
               }
             }
 
-            // Handle result
-            if ("result" in message) {
+            // Handle result. The SDK emits two flavors:
+            //   - SDKResultSuccess: { type: "result", subtype: "success",
+            //                         result: string, ... }
+            //   - SDKResultError:   { type: "result", subtype:
+            //                         "error_during_execution" | ...,
+            //                         errors: string[], is_error: true, ... }
+            // The previous check `"result" in message` only matched success
+            // because SDKResultError has `errors[]` instead of `result`.
+            // Error results then fell through, the loop kept waiting, and
+            // the SDK eventually threw `Claude Code returned an error
+            // result: ...` which surfaced as a bare `❌` message with no
+            // cost/duration footer — exactly the symptom the user reported.
+            if (message.type === "result") {
               const resultMsg = message as {
+                type: "result";
+                subtype?: string;
                 result?: string;
+                errors?: string[];
+                is_error?: boolean;
                 total_cost_usd?: number;
                 duration_ms?: number;
               };
+              const isError =
+                resultMsg.is_error === true ||
+                (resultMsg.subtype !== undefined && resultMsg.subtype !== "success");
+              const resultText = isError
+                ? (resultMsg.errors && resultMsg.errors.length > 0
+                    ? resultMsg.errors.join("; ")
+                    : L("Task failed", "작업 실패"))
+                : (resultMsg.result ?? L("Task completed", "작업 완료"));
 
               // Flush remaining buffer
               if (responseBuffer.length > 0) {
@@ -424,13 +447,13 @@ class SessionManager {
                 console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
               }
 
-              // Send result embed
-              const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
+              // Send result embed (red + ❌ on error, green + ✅ on success)
               const resultEmbed = createResultEmbed(
                 resultText,
                 resultMsg.total_cost_usd ?? 0,
                 resultMsg.duration_ms ?? 0,
                 getConfig().SHOW_COST,
+                isError,
               );
               await channel.send({ embeds: [resultEmbed] });
 
@@ -444,7 +467,7 @@ class SessionManager {
                 ));
               }
 
-              updateSessionStatus(channelId, "idle");
+              updateSessionStatus(channelId, isError ? "offline" : "idle");
               hasResult = true;
             }
           }

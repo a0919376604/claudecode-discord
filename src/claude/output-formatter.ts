@@ -254,16 +254,28 @@ export function createResultEmbed(
   costUsd: number,
   durationMs: number,
   showCost: boolean = true,
+  isError: boolean = false,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
   const footer = showCost
     ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}  |  ${L("Duration", "소요 시간")} : ${duration}`
     : `${L("Duration", "소요 시간")} : ${duration}`;
 
+  // Error results (SDKResultError: error_during_execution / error_max_turns
+  // / error_max_budget_usd / error_max_structured_output_retries) come
+  // through here too. Surface them as a proper red embed with the joined
+  // errors[] text so the user understands the session ended in failure —
+  // previously these were silently dropped because the calling site only
+  // matched on `"result" in message`, which is false for SDKResultError.
+  const title = isError
+    ? L("❌ Task Failed", "❌ 작업 실패")
+    : L("✅ Task Complete", "✅ 작업 완료");
+  const color = isError ? 0xff0000 : 0x00ff00;
+
   const embed = new EmbedBuilder()
-    .setTitle(L("✅ Task Complete", "✅ 작업 완료"))
+    .setTitle(title)
     .setDescription(result.slice(0, 4000))
-    .setColor(0x00ff00)
+    .setColor(color)
     .setFooter({ text: footer })
     .setTimestamp();
 
