@@ -1,7 +1,7 @@
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { TextChannel } from "discord.js";
+import type { Message, TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -21,6 +21,24 @@ import {
   splitMessage,
   type AskQuestionData,
 } from "./output-formatter.js";
+import {
+  decideProgressAction,
+  buildProgressContent,
+} from "./progress-decision.js";
+
+/**
+ * After Claude has streamed any text, the original Discord message holds real
+ * content and can no longer be safely overwritten by progress updates. Once
+ * Claude has been silent (no new text) for this many milliseconds while still
+ * doing tool work, we send a SEPARATE progress message below the streamed
+ * text so the user can see the session is still alive.
+ *
+ * 30s balances "I want to see progress" vs "don't spam new messages every
+ * tool call." Override via env if a project prefers tighter feedback.
+ */
+const PROGRESS_STALE_MS = Number(process.env.PROGRESS_STALE_MS) > 0
+  ? Number(process.env.PROGRESS_STALE_MS)
+  : 30_000;
 
 interface ActiveSession {
   queryInstance: Query;
@@ -89,23 +107,66 @@ class SessionManager {
     let toolUseCount = 0;
     let hasTextOutput = false;
     let hasResult = false;
+    // Timestamp of the last assistant-text streaming edit. Used to decide
+    // whether the post-text phase has been silent long enough that we should
+    // surface a separate "still working" progress message.
+    let lastTextTime = startTime;
+    // Progress message created during a silent tool-work phase (post-text).
+    // Reset to null whenever fresh text streams so the next stale window
+    // creates a new snapshot below the latest streamed content.
+    // The `as` cast widens the inferred type past the literal `null` so TS
+    // doesn't treat later assignments inside async closures as `never`.
+    let progressMessage = null as Message | null;
 
-    // Heartbeat timer - updates status message every 15s when no text output yet
-    const heartbeatInterval = setInterval(async () => {
-      if (hasTextOutput) return; // stop heartbeat once real content is streaming
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      const mins = Math.floor(elapsed / 60);
-      const secs = elapsed % 60;
-      const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    /**
+     * Single entry point for "show the user we're still working." Dispatches
+     * to either the initial Thinking message (pre-text) or a separate
+     * progress message (post-text, when streaming has been silent for a
+     * while). See progress-decision.ts for the rationale.
+     */
+    const surfaceProgress = async () => {
+      const content = buildProgressContent(
+        lastActivity,
+        Date.now() - startTime,
+        toolUseCount,
+      );
+      const action = decideProgressAction({
+        hasTextOutput,
+        lastTextTime,
+        now: Date.now(),
+        staleThresholdMs: PROGRESS_STALE_MS,
+        progressMessageExists: progressMessage !== null,
+      });
+
       try {
-        await currentMessage.edit({
-          content: `⏳ ${lastActivity} (${timeStr})`,
-          components: [stopRow],
-        });
+        switch (action) {
+          case "skip":
+            return;
+          case "edit-current":
+            await currentMessage.edit({ content, components: [stopRow] });
+            return;
+          case "edit-progress":
+            if (progressMessage) {
+              await progressMessage.edit({ content, components: [stopRow] });
+            }
+            return;
+          case "send-progress":
+            progressMessage = await channel.send({ content, components: [stopRow] });
+            return;
+        }
       } catch (e) {
-        console.warn(`[heartbeat] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
+        console.warn(
+          `[progress] Failed to surface progress for ${channelId}:`,
+          e instanceof Error ? e.message : e,
+        );
       }
-    }, 15_000);
+    };
+
+    // Heartbeat timer — surfaces progress every 15s for as long as the
+    // session is active. Unlike the previous implementation, this does NOT
+    // bail once hasTextOutput is true; surfaceProgress decides whether to
+    // edit the original message, the progress message, or stay quiet.
+    const heartbeatInterval = setInterval(surfaceProgress, 15_000);
 
     const skipPerms = isSkipPermissionsEnabled();
     const runQuery = (useResume: boolean) => query({
@@ -141,21 +202,12 @@ class SessionManager {
             : "";
           lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
 
-          // Update status message if no text output yet
-          if (!hasTextOutput) {
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            const timeStr = elapsed > 60
-              ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
-              : `${elapsed}s`;
-            try {
-              await currentMessage.edit({
-                content: `⏳ ${lastActivity} (${timeStr}) [${toolUseCount} tools used]`,
-                components: [stopRow],
-              });
-            } catch (e) {
-              console.warn(`[tool-status] Failed to edit message for ${channelId}:`, e instanceof Error ? e.message : e);
-            }
-          }
+          // Surface progress on every tool use. surfaceProgress decides
+          // whether to edit the Thinking message (pre-text), update the
+          // separate progress message (post-text, stale), or stay quiet
+          // (post-text, fresh). This is the fix for the UI-freeze bug
+          // where tool activity after first text output was invisible.
+          await surfaceProgress();
 
           // Handle AskUserQuestion with interactive Discord UI
           if (toolName === "AskUserQuestion") {
@@ -317,6 +369,14 @@ class SessionManager {
               const now = Date.now();
               if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
                 lastEditTime = now;
+                // Record that fresh text just streamed. This (a) suppresses
+                // the next few progress ticks via the stale-threshold check
+                // and (b) abandons any existing progress message so the next
+                // stale window will create a fresh snapshot below the
+                // latest streamed content rather than editing one that's
+                // now above unrelated text.
+                lastTextTime = now;
+                progressMessage = null;
                 const chunks = splitMessage(responseBuffer);
                 try {
                   await currentMessage.edit({ content: chunks[0] || "...", components: [] });
@@ -455,6 +515,14 @@ class SessionManager {
     } finally {
       clearInterval(heartbeatInterval);
       this.sessions.delete(channelId);
+
+      // Strip the Stop button from any lingering progress message so the
+      // user can't click it on a session that's already over. We don't
+      // delete the message — its content is a useful audit trail of what
+      // Claude was doing during the silent phase.
+      if (progressMessage) {
+        progressMessage.edit({ components: [] }).catch(() => {});
+      }
 
       // Clean up any pending approvals/questions for this channel
       for (const [id, entry] of pendingApprovals) {
