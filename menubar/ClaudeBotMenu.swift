@@ -813,7 +813,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
