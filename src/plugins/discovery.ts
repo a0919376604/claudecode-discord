@@ -14,7 +14,7 @@ const ManifestSchema = z.object({
         scope: z.string().optional(),
         installPath: z.string(),
         version: z.string().optional(),
-      }).passthrough(),
+      }).passthrough(), // allow vendor-specific manifest fields (gitCommitSha, lastUpdated, etc.) without erroring
     ),
   ),
 });
