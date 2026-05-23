@@ -4,7 +4,7 @@
 
 **Goal:** Make `claudecode-discord` auto-discover any installed Claude plugin's `commands/*.md` files and expose them as native Discord slash commands (with parsed `argument-hint` parameters), so `/autoresearch`, `/wiki`, `/save`, `/canvas` and friends become first-class Discord commands.
 
-**Architecture:** New `src/plugins/` module with four focused files: `argument-hint.ts` (pure parser), `discovery.ts` (filesystem scan), `registry.ts` (in-memory store + Discord schema builder), `bridge.ts` (Discord interaction → existing `sessionManager.sendMessage`). Plugin commands enter the existing `commandMap` in `client.ts` via `execute` thunks — no changes to `session-manager.ts` or `interaction.ts`. Two new bot-owned commands: `/plugins-sync` (re-scan and re-register) and `/plugins-list` (show registered/skipped).
+**Architecture:** New `src/plugins/` module with four focused files: `argument-hint.ts` (pure parser), `discovery.ts` (filesystem scan), `registry.ts` (in-memory store + Discord schema builder + SDK plugin config emitter), `bridge.ts` (Discord interaction → existing `sessionManager.sendMessage`). Plugin commands enter the existing `commandMap` in `client.ts` via `execute` thunks. `session-manager.ts` gets a small 1-2 line addition (pass `plugins:` to `query()`) — Phase 0 found that the SDK doesn't auto-load user-scope plugins without it. Bridge constructs prompts as `/<pluginShortName>:<commandName> <args>` (namespaced form is required by the SDK). Two new bot-owned commands: `/plugins-sync` and `/plugins-list`.
 
 **Tech Stack:** TypeScript (ESM, strict), discord.js v14, Vitest, zod v4, Claude Agent SDK 0.2.x. Tests co-located with source as `*.test.ts`.
 
@@ -30,10 +30,10 @@
 
 **Modified:**
 - `src/bot/client.ts` — call discovery at boot, register plugin commands in `commandMap` and Discord guild commands
+- `src/claude/session-manager.ts` — pass `plugins: pluginRegistry.toSdkPluginConfig()` into the `query()` options (1-2 line addition; Phase 0 finding)
 - `package.json` — add `scripts:list-plugin-commands` npm script
 
 **Unchanged:**
-- `src/claude/session-manager.ts`
 - `src/bot/handlers/interaction.ts`
 - `src/bot/handlers/message.ts`
 - DB schema, `.env`, all 12 existing bot commands
@@ -127,9 +127,18 @@ export interface ParsedParam {
 
 /**
  * One command discovered from a plugin's commands/ directory.
+ *
+ * Three plugin-identity fields are populated:
+ * - `pluginName`: full marketplace key, e.g. "claude-obsidian@claude-obsidian-marketplace"
+ * - `pluginShortName`: the part before "@", used in namespaced command invocation
+ *   (the SDK exposes plugin commands as "claude-obsidian:autoresearch")
+ * - `pluginInstallPath`: absolute path to the plugin install dir, passed into
+ *   query({ plugins: [{ type: 'local', path: ... }] }) so the SDK loads it
  */
 export interface DiscoveredCommand {
-  pluginName: string; // e.g. "claude-obsidian@claude-obsidian-marketplace"
+  pluginName: string;
+  pluginShortName: string;
+  pluginInstallPath: string;
   commandName: string; // sanitized; matches the .md filename without extension
   description: string; // from frontmatter, truncated to 100 chars
   parsedParams: ParsedParam[]; // empty array → bridge uses single-`args` fallback
@@ -772,11 +781,33 @@ describe("scanInstalledPlugins — scanning commands/", () => {
     expect(result.commands).toHaveLength(1);
     expect(result.commands[0]).toMatchObject({
       pluginName: "p1@m1",
+      pluginShortName: "p1",
+      pluginInstallPath: pluginPath,
       commandName: "autoresearch",
       description: "Research a topic.",
       parsedParams: [],
     });
     expect(result.commands[0]!.sourcePath).toContain("autoresearch.md");
+  });
+
+  it("derives pluginShortName as the substring before '@'", async () => {
+    const pluginPath = makePlugin(tmpHome, "claude-obsidian", {
+      "x.md": `---\ndescription: X.\n---`,
+    });
+    writeManifest(tmpHome, { "claude-obsidian@claude-obsidian-marketplace": pluginPath });
+
+    const result = await scanInstalledPlugins({ homeDir: tmpHome });
+    expect(result.commands[0]!.pluginShortName).toBe("claude-obsidian");
+  });
+
+  it("uses the full pluginName as pluginShortName when no '@' present", async () => {
+    const pluginPath = makePlugin(tmpHome, "noat", {
+      "x.md": `---\ndescription: X.\n---`,
+    });
+    writeManifest(tmpHome, { "noat": pluginPath });
+
+    const result = await scanInstalledPlugins({ homeDir: tmpHome });
+    expect(result.commands[0]!.pluginShortName).toBe("noat");
   });
 
   it("parses argument-hint into parsedParams", async () => {
@@ -1013,8 +1044,16 @@ export async function scanInstalledPlugins(
         ? parseArgumentHint(fm.argumentHint)
         : [];
 
+      // pluginShortName = part of pluginKey before "@"
+      // (e.g. "claude-obsidian" from "claude-obsidian@claude-obsidian-marketplace")
+      const pluginShortName = pluginKey.includes("@")
+        ? pluginKey.slice(0, pluginKey.indexOf("@"))
+        : pluginKey;
+
       commands.push({
         pluginName: pluginKey,
+        pluginShortName,
+        pluginInstallPath: installPath,
         commandName,
         description,
         parsedParams,
@@ -1261,7 +1300,7 @@ git commit -m "registry: in-memory store with bot-collision and first-wins confl
 
 ---
 
-## Task 9: registry — `toDiscordCommands` builder
+## Task 9: registry — `toDiscordCommands` builder + `toSdkPluginConfig`
 
 **Files:**
 - Modify: `src/plugins/registry.test.ts`
@@ -1348,7 +1387,9 @@ describe("PluginRegistry.toDiscordCommands", () => {
   it("uses the command description as the Discord description", () => {
     registry.register([
       {
-        pluginName: "p1",
+        pluginName: "p1@m1",
+        pluginShortName: "p1",
+        pluginInstallPath: "/fake/p1",
         commandName: "described",
         description: "A described command.",
         parsedParams: [],
@@ -1357,6 +1398,53 @@ describe("PluginRegistry.toDiscordCommands", () => {
     ]);
     const json = registry.toDiscordCommands()[0]!.toJSON();
     expect(json.description).toBe("A described command.");
+  });
+});
+
+describe("PluginRegistry.toSdkPluginConfig", () => {
+  let registry: PluginRegistry;
+  beforeEach(() => {
+    registry = new PluginRegistry(new Set());
+  });
+
+  it("returns empty array when no plugins registered", () => {
+    expect(registry.toSdkPluginConfig()).toEqual([]);
+  });
+
+  it("emits one entry per distinct plugin install path", () => {
+    registry.register([
+      {
+        pluginName: "p1@m1",
+        pluginShortName: "p1",
+        pluginInstallPath: "/fake/p1",
+        commandName: "a",
+        description: "",
+        parsedParams: [],
+        sourcePath: "/fake/p1/a.md",
+      },
+      {
+        pluginName: "p1@m1",
+        pluginShortName: "p1",
+        pluginInstallPath: "/fake/p1",
+        commandName: "b",
+        description: "",
+        parsedParams: [],
+        sourcePath: "/fake/p1/b.md",
+      },
+      {
+        pluginName: "p2@m1",
+        pluginShortName: "p2",
+        pluginInstallPath: "/fake/p2",
+        commandName: "c",
+        description: "",
+        parsedParams: [],
+        sourcePath: "/fake/p2/c.md",
+      },
+    ]);
+    const cfg = registry.toSdkPluginConfig();
+    expect(cfg).toHaveLength(2); // deduped by install path
+    expect(cfg.map((e) => e.path).sort()).toEqual(["/fake/p1", "/fake/p2"]);
+    for (const e of cfg) expect(e.type).toBe("local");
   });
 });
 ```
@@ -1369,9 +1457,24 @@ npx vitest run src/plugins/registry.test.ts
 ```
 Expected: new tests fail with "toDiscordCommands is not a function" or similar.
 
-- [ ] **Step 3: Implement `toDiscordCommands`**
+- [ ] **Step 3: Implement `toDiscordCommands` and `toSdkPluginConfig`**
 
-Add the following method to the `PluginRegistry` class in `src/plugins/registry.ts` (insert before the closing `}`):
+Add `toSdkPluginConfig` and `toDiscordCommands` methods to the `PluginRegistry` class in `src/plugins/registry.ts` (insert before the closing `}`):
+
+```ts
+  toSdkPluginConfig(): { type: "local"; path: string }[] {
+    const seen = new Set<string>();
+    const out: { type: "local"; path: string }[] = [];
+    for (const cmd of this.list()) {
+      if (seen.has(cmd.pluginInstallPath)) continue;
+      seen.add(cmd.pluginInstallPath);
+      out.push({ type: "local", path: cmd.pluginInstallPath });
+    }
+    return out;
+  }
+```
+
+Then add `toDiscordCommands` (insert before the closing `}`):
 
 ```ts
   toDiscordCommands(): import("discord.js").SlashCommandBuilder[] {
@@ -1527,9 +1630,12 @@ function makeInteraction(opts: {
 function reg(
   commandName: string,
   parsedParams: RegisteredPluginCommand["parsedParams"] = [],
+  pluginShortName = "claude-obsidian",
 ): RegisteredPluginCommand {
   return {
-    pluginName: "test-plugin",
+    pluginName: `${pluginShortName}@test-marketplace`,
+    pluginShortName,
+    pluginInstallPath: `/fake/${pluginShortName}`,
     commandName,
     description: "x",
     parsedParams,
@@ -1574,7 +1680,7 @@ describe("handlePluginCommand", () => {
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
-  it("builds '/autoresearch' prompt when no args and dispatches to sessionManager", async () => {
+  it("builds '/<plugin>:<cmd>' prompt when no args and dispatches to sessionManager", async () => {
     mockGetProject.mockReturnValue({ project_path: "/p" });
     mockIsActive.mockReturnValue(false);
     const channel = { id: "chan-1", send: vi.fn() };
@@ -1582,10 +1688,13 @@ describe("handlePluginCommand", () => {
 
     await handlePluginCommand(interaction as any, reg("autoresearch"));
 
-    expect(mockSendMessage).toHaveBeenCalledWith(channel, "/autoresearch");
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      channel,
+      "/claude-obsidian:autoresearch",
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining("/autoresearch"),
+        content: expect.stringContaining("/claude-obsidian:autoresearch"),
       }),
     );
   });
@@ -1601,7 +1710,7 @@ describe("handlePluginCommand", () => {
 
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.anything(),
-      "/autoresearch AI agents in 2026",
+      "/claude-obsidian:autoresearch AI agents in 2026",
     );
   });
 
@@ -1624,7 +1733,7 @@ describe("handlePluginCommand", () => {
 
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.anything(),
-      "/excerpt foo.md 10-20",
+      "/claude-obsidian:excerpt foo.md 10-20",
     );
   });
 
@@ -1644,7 +1753,7 @@ describe("handlePluginCommand", () => {
 
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.anything(),
-      "/excerpt foo.md",
+      "/claude-obsidian:excerpt foo.md",
     );
   });
 });
@@ -1717,11 +1826,13 @@ function buildPrompt(
   interaction: ChatInputCommandInteraction,
   registered: RegisteredPluginCommand,
 ): string {
-  const name = registered.commandName;
+  // SDK exposes plugin commands as namespaced "<pluginShortName>:<commandName>"
+  // — bare names don't dispatch. Phase 0 finding.
+  const slashName = `${registered.pluginShortName}:${registered.commandName}`;
 
   if (registered.parsedParams.length === 0) {
     const args = (interaction.options.getString("args") ?? "").trim();
-    return args ? `/${name} ${args}` : `/${name}`;
+    return args ? `/${slashName} ${args}` : `/${slashName}`;
   }
 
   // Read each param's value in originalIndex order, drop empty trailing values.
@@ -1737,7 +1848,7 @@ function buildPrompt(
     values.pop();
   }
   const joined = values.join(" ");
-  return joined ? `/${name} ${joined}` : `/${name}`;
+  return joined ? `/${slashName} ${joined}` : `/${slashName}`;
 }
 ```
 
@@ -1834,10 +1945,11 @@ git commit -m "Add dev script to inspect discovered plugin commands"
 
 ---
 
-## Task 12: Wire discovery into bot startup
+## Task 12: Wire discovery into bot startup + pass plugins to SDK
 
 **Files:**
 - Modify: `src/bot/client.ts`
+- Modify: `src/claude/session-manager.ts` (small change — pass `plugins:` to `query()`)
 
 - [ ] **Step 1: Read the current state of client.ts**
 
@@ -1914,7 +2026,53 @@ Replace lines ~51-67 (the entire `client.on("ready", ...)` block) with:
   });
 ```
 
-- [ ] **Step 4: Verify TypeScript compiles**
+- [ ] **Step 4: Patch session-manager.ts to pass plugins to query()**
+
+In `src/claude/session-manager.ts`, find the `runQuery` definition (around line 221-230):
+
+```ts
+    const runQuery = (useResume: boolean) => query({
+      prompt,
+      options: {
+        cwd: project.project_path,
+        permissionMode: skipPerms ? "bypassPermissions" : "default",
+        ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
+        env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+        ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
+        ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
+```
+
+Add a `plugins:` line inside the `options:` object (Phase 0 found this is required for the SDK to load plugin commands at all). Place it just after `cwd` for clarity. Also add the import at the top.
+
+At top of file, add:
+```ts
+import { pluginRegistry } from "../bot/client.js";
+```
+
+Inside `options:`, add:
+```ts
+        plugins: pluginRegistry.toSdkPluginConfig(),
+```
+
+Final block looks like:
+```ts
+    const runQuery = (useResume: boolean) => query({
+      prompt,
+      options: {
+        cwd: project.project_path,
+        plugins: pluginRegistry.toSdkPluginConfig(),
+        permissionMode: skipPerms ? "bypassPermissions" : "default",
+        ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
+        env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+        ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
+        ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
+```
+
+Why this works: `pluginRegistry` is the same singleton populated by discovery on bot startup. By the time any message triggers a `runQuery()` call, registration has completed. If no plugins are installed, `toSdkPluginConfig()` returns `[]` and the SDK behavior is unchanged.
+
+Why the circular import (session-manager → client → ... → session-manager) is OK: the only access of `pluginRegistry` is inside `runQuery`, which fires lazily per-message. By call time, both modules are fully evaluated. (Verified the same pattern works for the other plugin-using commands in this PR.)
+
+- [ ] **Step 5: Verify TypeScript compiles**
 
 Run:
 ```bash
@@ -1928,7 +2086,7 @@ execute: (interaction: ChatInputCommandInteraction) => handlePluginCommand(inter
 
 `ChatInputCommandInteraction` is already imported at the top of `client.ts`.
 
-- [ ] **Step 5: Smoke test the bot startup**
+- [ ] **Step 6: Smoke test the bot startup**
 
 Run:
 ```bash
@@ -1943,11 +2101,11 @@ Then in Discord, type `/` in a registered channel. You should see `autoresearch`
 
 Stop the bot with Ctrl-C.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/bot/client.ts
-git commit -m "client: discover plugin commands at startup and register with Discord"
+git add src/bot/client.ts src/claude/session-manager.ts
+git commit -m "client/session-manager: discover plugins at startup, pass to SDK query()"
 ```
 
 ---
@@ -2278,14 +2436,14 @@ Then `/register` a channel to `/Users/leric/Desktop/code/claude-obsidian` (the v
 In the vault channel:
 - Type `/autoresearch args:"AI agents in 2026"`
 - Confirm:
-  - Bot's interaction reply shows `Running /autoresearch AI agents in 2026`.
+  - Bot's interaction reply shows `Running /claude-obsidian:autoresearch AI agents in 2026` (namespaced form — this is what's actually sent to the SDK).
   - A channel message starts streaming the autoresearch session.
   - The autoresearch skill actually fires (you should see tool calls, wiki writes, eventually a summary).
 
 - [ ] **Step 3: Empty-args case**
 
 - Type `/wiki` with no args.
-- Confirm: bot replies `Running /wiki`, then wiki skill runs (status check or scaffold prompt).
+- Confirm: bot replies `Running /claude-obsidian:wiki`, then wiki skill runs (status check or scaffold prompt).
 
 - [ ] **Step 4: Concurrent-session guard**
 
@@ -2318,9 +2476,9 @@ In the vault channel:
 - Run `/plugins-sync`.
 - Type `/` — `_test` should appear with `query` (required) first, `path` (optional) second.
 - Run `/_test query:"hello" path:"/tmp"`.
-- Confirm: bot replies `Running /_test hello /tmp` (query value before path value).
+- Confirm: bot replies `Running /claude-obsidian:_test hello /tmp` (query value before path value, namespaced form).
 - Run `/_test query:"hello"` (omit path).
-- Confirm: bot replies `Running /_test hello` (no trailing space, optional dropped).
+- Confirm: bot replies `Running /claude-obsidian:_test hello` (no trailing space, optional dropped).
 - Delete `_test.md`, run `/plugins-sync`.
 
 - [ ] **Step 7: Run all tests one more time**

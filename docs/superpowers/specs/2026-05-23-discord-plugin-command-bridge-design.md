@@ -132,7 +132,10 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 - For each plugin entry, lists `<installPath>/commands/*.md`.
 - Parses frontmatter (hand-rolled minimal parser — extract `description` and `argument-hint`, no nested YAML).
 - Parses `argument-hint` via `parseArgumentHint(hint: string): ParsedParam[]` (see `argument-hint` Parsing Semantics section). Returns empty array → caller applies the `args` fallback.
-- Returns `{ pluginName, commandName, description, parsedParams: ParsedParam[], sourcePath }[]`.
+- Returns `{ pluginName, pluginShortName, pluginInstallPath, commandName, description, parsedParams: ParsedParam[], sourcePath }[]`.
+  - `pluginName`: full marketplace key like `claude-obsidian@claude-obsidian-marketplace`
+  - `pluginShortName`: portion before the `@` — used in namespaced command invocation
+  - `pluginInstallPath`: passed to SDK `query({ plugins: [{type:'local', path:...}] })`
 - Logs warnings for: missing install path, malformed JSON, malformed frontmatter, invalid Discord names, unparseable hint slots, sanitized param names, truncated slots over the 25 limit.
 
 **`src/plugins/argument-hint.ts`** (~70 lines)
@@ -141,11 +144,12 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 - Handles sanitization (name regex, description truncation, duplicate suffixing, 25-param truncation).
 - Pure function; no I/O. Heavily unit-tested with the examples table from the spec.
 
-**`src/plugins/registry.ts`** (~100 lines)
+**`src/plugins/registry.ts`** (~110 lines)
 - In-memory store: `Map<commandName, RegisteredPluginCommand>`.
 - `register(discovered: DiscoveredCommand[])` — merge with bot-owned name set, log conflicts.
 - `lookup(name: string)` — for `interaction.ts` dispatch.
 - `list()` — for `/plugins-list`.
+- `toSdkPluginConfig(): SdkPluginConfig[]` — emit `{ type: 'local', path: pluginInstallPath }` for every distinct plugin in the registry. Called by `session-manager.ts` to populate `query({ plugins: ... })`.
 - `toDiscordCommands()` — for each registered command, build a `SlashCommandBuilder`:
   - If `parsedParams.length === 0` → add a single optional string option `args` ("Free-form arguments").
   - Else, **add required params first, then optional** (Discord ordering requirement), each as `addStringOption(opt => opt.setName(...).setDescription(...).setRequired(...))`.
@@ -159,7 +163,7 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
   - Build prompt string from `registered.parsedParams`:
     - If `parsedParams.length === 0` → read the single `args` option (may be empty).
     - Else → for each param sorted by `originalIndex`, read `interaction.options.getString(param.name) ?? ''`. Trim, drop empty trailing values, join with single spaces.
-    - Final prompt: `/${commandName}${joined ? ' ' + joined : ''}`.
+    - Final prompt: `/${registered.pluginShortName}:${registered.commandName}${joined ? ' ' + joined : ''}` — **namespaced form** is mandatory (Phase 0 finding). The plugin-short-name is the bit before the `@` in the marketplace key (e.g. `claude-obsidian` from `claude-obsidian@claude-obsidian-marketplace`).
   - `await interaction.editReply(\`Running \\\`${prompt}\\\`\`)` — acknowledge the slash invocation in the slash-command bubble.
   - Fetch the `TextChannel` from `interaction.channel` (or fetchable from client/cache).
   - `await sessionManager.sendMessage(channel, prompt)` — streaming response and tool-approval flow into fresh channel messages, identical to freeform input.
@@ -184,9 +188,13 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 
 The existing slash-command dispatch lives in `src/bot/client.ts` (lines ~80-96), which uses a uniform `commandMap.get(interaction.commandName).execute(interaction)` pattern. Plugin commands enter that same map at registration time with an `execute` thunk that calls into the bridge, so dispatch is automatic — no special case in any handler.
 
-**`src/claude/session-manager.ts`** — **no changes required**.
+**`src/claude/session-manager.ts`** — **small focused change** (~5 lines added).
 
-The current signature is `sessionManager.sendMessage(channel: TextChannel, prompt: string)`. Session-manager creates its own messages via `channel.send()` and edits the returned `Message` handles. The slash-command path reuses this verbatim: the bridge acknowledges the interaction (via the already-`deferReply()`'d reply from `client.ts`) and then calls `sessionManager.sendMessage(channel, prompt)` exactly like `message.ts` does. The streaming response lives in fresh channel messages just like freeform input today. UX consequence: a slash command produces an ephemeral-ish "Running `/autoresearch AI agents`…" interaction reply plus the streaming response message — matches the user-message + bot-reply rhythm of the existing freeform flow.
+The current signature `sessionManager.sendMessage(channel, prompt)` stays. Streaming, heartbeat, tool-approval, message-edit logic — all untouched.
+
+The single change: the call to `query({ ... options: { cwd, ... } })` around line 221 must additionally include `plugins: pluginRegistry.toSdkPluginConfig()`, which emits an array of `{ type: 'local', path: <installPath> }` entries for every plugin whose commands won registration. Without this, the SDK won't dispatch namespaced plugin commands (Phase 0 finding).
+
+This couples session-manager to the registry's existence, but only via a static import. If the registry is empty (no plugins discovered), `toSdkPluginConfig()` returns `[]` and the SDK behavior is identical to today.
 
 ### Unchanged
 
@@ -258,11 +266,15 @@ The current signature is `sessionManager.sendMessage(channel: TextChannel, promp
 
 ## Critical Open Questions (resolved before code)
 
-1. **Does the Claude Agent SDK recognize `/<command>` text as a slash command and dispatch the plugin's skill, the same way interactive Claude Code does?**
-   - This is the single load-bearing assumption.
-   - **Verification (Phase 0):** Write a ~10-line node script using `@anthropic-ai/claude-agent-sdk`. Set `cwd` to the `claude-obsidian` vault. Send `query({ prompt: "/autoresearch test topic" })`. Observe whether the autoresearch skill fires (look for the corresponding tool calls or wiki page writes).
-   - **If yes:** Proceed with the design as-is.
-   - **If no:** Switch the bridge to a fallback strategy — read the command body markdown, inline the `args` into it, and send the rendered body as the prompt. This is more work but achievable; the design splits cleanly here.
+1. **Does the Claude Agent SDK recognize `/<command>` text as a slash command and dispatch the plugin's skill, the same way interactive Claude Code does?** — **RESOLVED 2026-05-23.**
+
+   Phase 0 probing established:
+   - The SDK does NOT auto-load user-scope plugins. A vanilla `query({ prompt: "/autoresearch ..." })` returns `"Unknown command: /autoresearch"`.
+   - The SDK DOES load plugins when caller passes `options.plugins: [{ type: 'local', path: '<installPath>' }]` (or `options.settingSources: ['user']` to read `~/.claude/settings.json`).
+   - Loaded plugin commands appear **namespaced**: `claude-obsidian:autoresearch`, not bare `autoresearch`. The bridge must construct prompts as `/<pluginShortName>:<commandName> <args>`.
+   - When invoked via the namespaced form, the model receives the skill body (via the `Skill` tool flow) and executes the workflow — same end behavior as interactive CC.
+
+   Design consequence: `session-manager.ts` is no longer "untouched". It must populate `options.plugins` from the registry's known install paths when calling `query()`. This is a small focused change (a few lines), not a refactor — see Component Breakdown for details.
 
 2. **Does `installed_plugins.json` carry a disabled state?**
    - Inspect the file format at Phase 1 implementation time.
