@@ -1,3 +1,4 @@
+import { SlashCommandBuilder } from "discord.js";
 import type {
   DiscoveredCommand,
   RegisteredPluginCommand,
@@ -88,5 +89,50 @@ export class PluginRegistry {
   clear(): void {
     this.store.clear();
     this.skipped = [];
+  }
+
+  toSdkPluginConfig(): { type: "local"; path: string }[] {
+    const seen = new Set<string>();
+    const out: { type: "local"; path: string }[] = [];
+    for (const cmd of this.list()) {
+      if (seen.has(cmd.pluginInstallPath)) continue;
+      seen.add(cmd.pluginInstallPath);
+      out.push({ type: "local", path: cmd.pluginInstallPath });
+    }
+    return out;
+  }
+
+  toDiscordCommands(): SlashCommandBuilder[] {
+    return this.list().map((cmd) => {
+      const builder = new SlashCommandBuilder()
+        .setName(cmd.commandName)
+        .setDescription(cmd.description);
+
+      if (cmd.parsedParams.length === 0) {
+        builder.addStringOption((opt) =>
+          opt
+            .setName("args")
+            .setDescription("Free-form arguments")
+            .setRequired(false),
+        );
+      } else {
+        // Discord requires required options before optional. Sort by required
+        // desc (true first), with originalIndex as the tiebreaker.
+        const sorted = [...cmd.parsedParams].sort((a, b) => {
+          if (a.required !== b.required) return a.required ? -1 : 1;
+          return a.originalIndex - b.originalIndex;
+        });
+        for (const p of sorted) {
+          builder.addStringOption((opt) =>
+            opt
+              .setName(p.name)
+              .setDescription(p.description)
+              .setRequired(p.required),
+          );
+        }
+      }
+
+      return builder;
+    });
   }
 }
