@@ -25,12 +25,14 @@ import * as clearSessionsCmd from "./commands/clear-sessions.js";
 import * as lastCmd from "./commands/last.js";
 import * as queueCmd from "./commands/queue.js";
 import * as usageCmd from "./commands/usage.js";
+import * as pluginsSyncCmd from "./commands/plugins-sync.js";
+import * as pluginsListCmd from "./commands/plugins-list.js";
 
 import { scanInstalledPlugins } from "../plugins/discovery.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { handlePluginCommand } from "../plugins/bridge.js";
 
-const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd];
+const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd];
 export const botOwnedCommandNames = new Set(commands.map((c) => c.data.name));
 export const commandMap = new Collection<
   string,
