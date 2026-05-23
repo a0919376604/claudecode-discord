@@ -1,0 +1,280 @@
+# Discord Plugin Command Bridge — Design Spec
+
+**Date:** 2026-05-23
+**Status:** Draft (awaiting review)
+**Owner:** leric
+**Target repo:** `claudecode-discord`
+
+## Problem
+
+Today, `claudecode-discord` bridges Discord channels to Claude Agent SDK sessions: each channel is `/register`ed to a project directory, and freeform messages flow through `SessionManager` to a Claude session running in that directory. The user has installed the `claude-obsidian` plugin (user-scope), which provides slash commands like `/autoresearch`, `/wiki`, `/save`, `/canvas`. They want to invoke these commands from Discord as **Discord-native slash commands** — appearing in the `/` autocomplete menu with proper parameter UI — rather than typing them as plain text.
+
+Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plugin that ships a `commands/*.md` directory should auto-appear as Discord slash commands at bot startup, without code changes per plugin.
+
+## Goals
+
+- Any installed Claude plugin's `commands/*.md` files automatically register as Discord slash commands on bot startup.
+- Slash command invocation flows through the existing `SessionManager` streaming/heartbeat/approval/stop-button machinery — no parallel pipeline.
+- Existing bot-owned slash commands and freeform-message behavior are 100% preserved.
+- New `/plugins-sync` and `/plugins-list` maintenance commands for refresh and visibility.
+
+## Non-Goals
+
+- Exposing plugin **skills** (vs. **commands**) as Discord slash commands. Most plugins ship many skills that aren't designed for one-shot invocation (e.g. `brainstorming`). Only `commands/*.md` are exposed.
+- Per-channel slash command scoping. Discord registers commands guild-wide; we don't use Discord's per-channel permissions API.
+- Structured / typed parameters from `argument-hint`. All plugin commands take a single optional `args` string parameter.
+- Auto-detection of plugin install/uninstall at runtime. Requires bot restart or manual `/plugins-sync`.
+- Namespace collision resolution beyond first-wins + bot-wins. No `<plugin>--<command>` prefixing.
+
+## Architecture
+
+### Data flow
+
+```
+[Discord]
+    ↓ /autoresearch args:"AI agents"
+[claudecode-discord bot]
+    ↓ interaction.ts: dispatch by command name
+[PluginCommandBridge]                              ← new
+    ↓ build prompt text: "/autoresearch AI agents"
+[SessionManager.sendMessage(channelId, prompt, replyTarget)]   ← existing, refactored
+    ↓ Claude Agent SDK query()
+[Claude session in registered project dir]
+    ↓ recognizes slash → invokes plugin skill (e.g. autoresearch)
+[Stream response back via existing message-edit loop]
+```
+
+### Startup sequence (once at bot boot)
+
+1. `PluginDiscovery.scan()` reads the Claude plugin manifest (cross-platform path; see `discovery.ts` notes).
+2. For each plugin entry, scan `<installPath>/commands/*.md`.
+3. Parse YAML frontmatter (`description`, `argument-hint`) of each file.
+4. Filter out commands with invalid Discord names (must match `^[a-z0-9_-]{1,32}$`).
+5. Merge with bot-owned commands; on name collision, **bot-owned wins**; on plugin-vs-plugin collision, **first-discovered wins**. Log warnings either way.
+6. Push the merged set via `guild.commands.set([...])`.
+7. Store registered plugin commands in an in-memory `Map<commandName, RegisteredPluginCommand>`.
+
+### Runtime (slash command invocation)
+
+1. `interaction.ts` receives `ChatInputCommandInteraction`.
+2. If `pluginRegistry.has(interaction.commandName)`, dispatch to `PluginCommandBridge`.
+3. Guard: channel must be `/register`ed (use existing `db.getProject(channelId)`).
+4. Guard: no concurrent session in this channel (use existing `SessionManager.isActive(channelId)`).
+5. `await interaction.deferReply()` to extend the 3-second response window.
+6. Build prompt: `/${commandName}${args ? ' ' + args : ''}`.
+7. Adapt the `ChatInputCommandInteraction` into a `ReplyTarget` (see Component breakdown below).
+8. Call `SessionManager.sendMessage(channelId, prompt, replyTarget)`.
+9. Existing streaming / heartbeat / tool-approval / stop-button flow handles the rest.
+
+## Component Breakdown
+
+### New files
+
+**`src/plugins/discovery.ts`** (~120 lines)
+- `scanInstalledPlugins(): Promise<DiscoveredCommand[]>`
+- Reads the Claude plugin manifest. Path resolution:
+  - macOS / Linux: `~/.claude/plugins/installed_plugins.json`
+  - Windows: `%USERPROFILE%\.claude\plugins\installed_plugins.json`
+  - Use `path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json')` — works cross-platform.
+- Validates manifest with zod.
+- Iterates plugins in **alphabetical order by plugin key** (e.g. `claude-obsidian@claude-obsidian-marketplace`) so first-wins collisions are deterministic across machines and reboots.
+- For each plugin entry, lists `<installPath>/commands/*.md`.
+- Parses frontmatter (hand-rolled minimal parser — extract `description` and `argument-hint`, no nested YAML).
+- Returns `{ pluginName, commandName, description, argumentHint?, sourcePath }[]`.
+- Logs warnings for: missing install path, malformed JSON, malformed frontmatter, invalid Discord names.
+
+**`src/plugins/registry.ts`** (~80 lines)
+- In-memory store: `Map<commandName, RegisteredPluginCommand>`.
+- `register(discovered: DiscoveredCommand[])` — merge with bot-owned name set, log conflicts.
+- `lookup(name: string)` — for `interaction.ts` dispatch.
+- `list()` — for `/plugins-list`.
+- `toDiscordCommands()` — emit `SlashCommandBuilder[]` for guild registration.
+
+**`src/plugins/bridge.ts`** (~100 lines)
+- `handlePluginCommand(interaction, registered)`:
+  - Channel-registered guard → ephemeral error if not.
+  - Concurrent-session guard → ephemeral error if active.
+  - `interaction.deferReply()`.
+  - Build prompt string.
+  - Wrap interaction in `InteractionReplyTarget` (implements `ReplyTarget` interface).
+  - Call `SessionManager.sendMessage(...)`.
+  - On uncaught exception: `interaction.editReply()` with error text + session cleanup.
+
+**`src/bot/commands/plugins-sync.ts`** (~40 lines)
+- Bot-owned slash command.
+- On invocation: re-run discovery, re-register Discord guild commands, reply with diff summary.
+
+**`src/bot/commands/plugins-list.ts`** (~40 lines)
+- Bot-owned slash command.
+- Replies with Discord embed table: command name, plugin name, status (registered / skipped-conflict / skipped-invalid-name).
+
+### Modified files
+
+**`src/bot/client.ts`**
+- Add to startup: `const discovered = await scanInstalledPlugins(); pluginRegistry.register(discovered);`
+- Replace existing `guild.commands.set(botOwnedCommands)` with `guild.commands.set([...botOwnedCommands, ...pluginRegistry.toDiscordCommands()])`.
+
+**`src/bot/handlers/interaction.ts`**
+- In the `ChatInputCommandInteraction` switch, before existing cases:
+  ```ts
+  const pluginRegistered = pluginRegistry.lookup(interaction.commandName);
+  if (pluginRegistered) {
+    return handlePluginCommand(interaction, pluginRegistered);
+  }
+  ```
+- Existing 10 bot-owned cases untouched.
+
+**`src/claude/session-manager.ts`**
+- Extract a `ReplyTarget` interface from current `Message` usage:
+  ```ts
+  interface ReplyTarget {
+    edit(content: string | MessagePayload): Promise<unknown>;
+    reply(content: string | MessagePayload): Promise<unknown>;
+    channel: TextBasedChannel;
+  }
+  ```
+- `sendMessage(channelId, content, replyTarget: ReplyTarget)` instead of `replyTarget: Message`.
+- Add two adapters:
+  - `MessageReplyTarget` (existing freeform message path)
+  - `InteractionReplyTarget` (new slash command path; `edit` → `interaction.editReply`, `reply` → `interaction.followUp`)
+
+### Unchanged
+
+- DB schema. No new tables/columns. Plugin state rebuilt from disk on each boot.
+- `canUseTool` / approval workflow. Slash-invoked sessions go through the same tool-approval UI as freeform.
+- AskUserQuestion / button / select-menu handlers.
+- All 10 existing bot-owned slash commands.
+- `.env` / config. No new env vars.
+
+## Edge Cases & Failure Modes
+
+### Discord-side
+
+| Situation | Behavior |
+|---|---|
+| Channel not `/register`ed | Ephemeral reply: "This channel is not registered to a project. Run /register first." |
+| Channel has active session | Ephemeral reply (reuse existing busy text). |
+| Total commands > 95 | At startup, truncate plugin commands (preserve all bot-owned). Log warning. `/plugins-list` flags truncated entries. |
+| Invalid Discord name (regex fails) | Filter at discovery, log warning. |
+| Description > 100 chars | Truncate to 97 + "…". |
+
+### Filesystem / plugin
+
+| Situation | Behavior |
+|---|---|
+| `installed_plugins.json` missing | Treat as 0 plugins; bot boots normally with no plugin commands. |
+| Malformed JSON | Log error; skip discovery; bot boots normally. |
+| Plugin install path missing | Skip plugin; log warning. |
+| Plugin has no `commands/` directory | Silent skip (normal case for `superpowers`, `discord`). |
+| Malformed frontmatter in a `.md` file | Skip that file; log warning; continue. |
+
+### Name conflicts
+
+| Situation | Behavior |
+|---|---|
+| Plugin command name collides with bot-owned | Skip plugin command; log warning. |
+| Two plugins ship same command name | First-discovered wins; skip the rest; log warning. `/plugins-list` shows skipped entries. |
+
+### Runtime
+
+| Situation | Behavior |
+|---|---|
+| `deferReply()` times out (>3s) | Catch `InteractionResponseTimeout`; log; do not proceed. |
+| `SessionManager` throws | Catch; `interaction.editReply()` shows error; existing finally-block session cleanup runs. |
+| Claude doesn't recognize the slash command (plugin not loaded by SDK) | Bridge passes through. Claude responds however it responds. No client-side detection. |
+| Plugin uninstalled while bot running | Slash command stays registered until next `/plugins-sync` or restart. If invoked, Claude session handles the unknown command. |
+
+### Security
+
+| Situation | Behavior |
+|---|---|
+| Non-whitelisted user fires command | Existing `guard.ts` blocks via `ALLOWED_USER_IDS`. |
+| Rate limit | Slash invocations count against the existing sliding-window limiter. |
+| Long `args` / prompt injection | Pass through. Existing architecture trusts whitelisted users; this PR doesn't change that posture. |
+| Channel registered to non-vault project | No filter. Forward to Claude; if the plugin needs the wrong working dir, Claude will respond accordingly (e.g. "No wiki vault found, run /wiki first"). |
+
+## Critical Open Questions (resolved before code)
+
+1. **Does the Claude Agent SDK recognize `/<command>` text as a slash command and dispatch the plugin's skill, the same way interactive Claude Code does?**
+   - This is the single load-bearing assumption.
+   - **Verification (Phase 0):** Write a ~10-line node script using `@anthropic-ai/claude-agent-sdk`. Set `cwd` to the `claude-obsidian` vault. Send `query({ prompt: "/autoresearch test topic" })`. Observe whether the autoresearch skill fires (look for the corresponding tool calls or wiki page writes).
+   - **If yes:** Proceed with the design as-is.
+   - **If no:** Switch the bridge to a fallback strategy — read the command body markdown, inline the `args` into it, and send the rendered body as the prompt. This is more work but achievable; the design splits cleanly here.
+
+2. **Does `installed_plugins.json` carry a disabled state?**
+   - Inspect the file format at Phase 1 implementation time.
+   - **If yes:** Filter out disabled plugins in discovery.
+   - **If no:** Treat `installed = enabled`. Add a `/plugins-sync --refresh-enabled` knob later if needed.
+
+## Rollout Plan
+
+### Phase 0 — Validate the core assumption (no claudecode-discord code changes)
+
+- Write a throwaway node script that uses `@anthropic-ai/claude-agent-sdk` to send `/autoresearch test` to a session rooted in the `claude-obsidian` vault.
+- Confirm the autoresearch skill fires (check log output, tool invocations, wiki file changes).
+- **Gate:** If this fails, redesign the bridge to use the fallback strategy (inline command body + args) before any further code is written.
+
+### Phase 1 — Discovery + registry (no Discord integration yet)
+
+- Implement `src/plugins/discovery.ts` and `src/plugins/registry.ts`.
+- Unit tests covering: empty manifest, malformed JSON, missing install paths, plugin with no `commands/`, plugin with valid commands, name collisions, invalid Discord names, oversized descriptions.
+- Dev script: `npm run scripts:list-plugin-commands` — prints discovered commands as a table.
+
+### Phase 2 — `ReplyTarget` refactor
+
+- Extract `ReplyTarget` interface in `src/claude/session-manager.ts`.
+- Migrate existing freeform-message path to use `MessageReplyTarget`.
+- Implement `InteractionReplyTarget`.
+- Run existing `vitest` suite — must pass unchanged.
+
+### Phase 3 — Wire up Discord registration
+
+- Update `src/bot/client.ts` startup sequence.
+- Add `src/plugins/bridge.ts`.
+- Add `/plugins-sync` and `/plugins-list` bot-owned commands.
+- Add dispatch in `src/bot/handlers/interaction.ts`.
+
+### Phase 4 — End-to-end verification
+
+- `/register` a Discord channel to `claude-obsidian` vault.
+- Test cases:
+  - `/autoresearch args:"AI agents"` — full pipeline runs, response streams.
+  - `/wiki` (empty args) — runs scaffold/status logic.
+  - `/save` — files current conversation.
+  - Same commands in an unregistered channel — proper error.
+  - Same commands while session is active — proper busy error.
+  - `/plugins-sync` after manually editing a `commands/*.md` description — sees update.
+  - `/plugins-list` shows correct table.
+
+## Backward Compatibility
+
+- All 10 existing bot-owned slash commands: untouched.
+- Freeform message handling: untouched.
+- Tool approval / AskUserQuestion / session resume: untouched.
+- DB schema: untouched. No migration.
+- `.env`: untouched. No new variables.
+- Existing users who upgrade get the new plugin commands; nothing they did before stops working.
+
+## Observability
+
+- `discovery.ts` logs at INFO: `Discovered N plugin commands across M plugins`.
+- Conflicts at WARN: `Plugin command /save (from claude-obsidian) skipped — conflicts with bot-owned command`.
+- `/plugins-list` returns a Discord embed with full status table.
+
+## Risk Register
+
+| Risk | Mitigation |
+|---|---|
+| Phase 0 assumption fails | Phase 0 exists specifically to catch this before sunk cost. Fallback strategy documented. |
+| `installed_plugins.json` format changes | zod schema validation in discovery; fall back to shelling out `claude plugin list` if structure mismatches. |
+| Discord guild command cache lag | `/plugins-sync` documents that propagation can take up to 1 minute; Discord client may need a reload. |
+| User installs new plugin and forgets to refresh | `/plugins-sync` is the documented manual refresh; auto-detection deferred to a future iteration. |
+
+## Estimated Effort
+
+- Phase 0: 30 minutes
+- Phase 1: 2-3 hours
+- Phase 2: 2-3 hours (refactor is the wildcard)
+- Phase 3: 2 hours
+- Phase 4: 1 hour
+- **Total: 1-2 working days**
