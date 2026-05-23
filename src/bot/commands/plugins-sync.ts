@@ -25,6 +25,13 @@ export async function execute(
 ): Promise<void> {
   const config = getConfig();
 
+  // Race window note: between clear() and register() — and between this
+  // command and the REST push below — an in-flight sessionManager.sendMessage
+  // could call pluginRegistry.toSdkPluginConfig() and momentarily see an
+  // empty array, causing the next plugin command in that running session to
+  // fail to resolve. Probability is low (sync is admin-only and rare; sessions
+  // are also serialized per channel via the isActive guard). Worst case: one
+  // failed plugin command, recoverable by re-invoking. Not worth a lock today.
   const discovery = await scanInstalledPlugins();
   pluginRegistry.clear();
   const result = pluginRegistry.register(discovery.commands);
