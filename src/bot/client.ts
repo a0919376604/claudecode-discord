@@ -26,11 +26,17 @@ import * as lastCmd from "./commands/last.js";
 import * as queueCmd from "./commands/queue.js";
 import * as usageCmd from "./commands/usage.js";
 
+import { scanInstalledPlugins } from "../plugins/discovery.js";
+import { PluginRegistry } from "../plugins/registry.js";
+import { handlePluginCommand } from "../plugins/bridge.js";
+
 const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd];
-const commandMap = new Collection<
+export const botOwnedCommandNames = new Set(commands.map((c) => c.data.name));
+export const commandMap = new Collection<
   string,
-  { execute: (interaction: ChatInputCommandInteraction) => Promise<void> }
+  { execute: (interaction: ChatInputCommandInteraction) => Promise<void>; data?: { toJSON: () => unknown } }
 >();
+export const pluginRegistry = new PluginRegistry(botOwnedCommandNames);
 
 for (const cmd of commands) {
   commandMap.set(cmd.data.name, cmd);
@@ -50,9 +56,39 @@ export async function startBot(): Promise<Client> {
   // Register slash commands after successful login (network guaranteed)
   client.on("ready", async () => {
     console.log(`Bot logged in as ${client.user?.tag}`);
+
+    // Discover and register plugin commands before pushing slash commands to Discord
+    try {
+      const discovery = await scanInstalledPlugins();
+      for (const w of discovery.warnings) console.warn(`[plugins] ${w}`);
+
+      const result = pluginRegistry.register(discovery.commands);
+      console.log(
+        `[plugins] Registered ${result.registered.length} plugin command(s); skipped ${result.skipped.length}`,
+      );
+      for (const s of result.skipped) {
+        console.warn(
+          `[plugins] skipped /${s.commandName} from ${s.pluginName}: ${s.reason}`,
+        );
+      }
+
+      // Add each registered plugin command to commandMap with a thunk
+      for (const reg of result.registered) {
+        commandMap.set(reg.commandName, {
+          execute: (interaction: ChatInputCommandInteraction) =>
+            handlePluginCommand(interaction, reg),
+        });
+      }
+    } catch (e) {
+      console.error("[plugins] Discovery failed:", e);
+    }
+
     try {
       const rest = new REST({ version: "10" }).setToken(config.DISCORD_BOT_TOKEN);
-      const commandData = commands.map((c) => c.data.toJSON());
+      const botOwnedData = commands.map((c) => c.data.toJSON());
+      const pluginData = pluginRegistry.toDiscordCommands().map((b) => b.toJSON());
+      const commandData = [...botOwnedData, ...pluginData];
+
       await rest.put(
         Routes.applicationGuildCommands(
           (await rest.get(Routes.currentApplication()) as { id: string }).id,
@@ -60,7 +96,9 @@ export async function startBot(): Promise<Client> {
         ),
         { body: commandData },
       );
-      console.log(`Registered ${commandData.length} slash commands`);
+      console.log(
+        `Registered ${commandData.length} slash commands (${botOwnedData.length} bot-owned, ${pluginData.length} plugin-derived)`,
+      );
     } catch (error) {
       console.error("Failed to register slash commands:", error);
     }

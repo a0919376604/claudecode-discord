@@ -10,6 +10,7 @@ import {
   setAutoApprove,
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
+import { pluginRegistry } from "../bot/client.js";
 import { L } from "../utils/i18n.js";
 import { isSkipPermissionsEnabled } from "../utils/skip-permissions.js";
 import {
@@ -222,6 +223,7 @@ class SessionManager {
       prompt,
       options: {
         cwd: project.project_path,
+        plugins: pluginRegistry.toSdkPluginConfig(),
         permissionMode: skipPerms ? "bypassPermissions" : "default",
         ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
         env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
