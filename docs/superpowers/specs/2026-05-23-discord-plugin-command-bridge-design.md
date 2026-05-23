@@ -14,6 +14,7 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 ## Goals
 
 - Any installed Claude plugin's `commands/*.md` files automatically register as Discord slash commands on bot startup.
+- **Parse `argument-hint:` frontmatter into Discord-native typed named parameters** (same UX as the bot's existing `/register path:…` command), with a sensible fallback when the hint is absent.
 - Slash command invocation flows through the existing `SessionManager` streaming/heartbeat/approval/stop-button machinery — no parallel pipeline.
 - Existing bot-owned slash commands and freeform-message behavior are 100% preserved.
 - New `/plugins-sync` and `/plugins-list` maintenance commands for refresh and visibility.
@@ -22,7 +23,8 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 
 - Exposing plugin **skills** (vs. **commands**) as Discord slash commands. Most plugins ship many skills that aren't designed for one-shot invocation (e.g. `brainstorming`). Only `commands/*.md` are exposed.
 - Per-channel slash command scoping. Discord registers commands guild-wide; we don't use Discord's per-channel permissions API.
-- Structured / typed parameters from `argument-hint`. All plugin commands take a single optional `args` string parameter.
+- **Sub-command parsing.** A `commands/*.md` file maps to one flat Discord slash command. Plugin commands that document sub-modes in their body (e.g. `/canvas new [name]`, `/save concept [name]`) get a single freeform-string parameter the user types the sub-mode into. Discord sub-command groups are out of scope for v1.
+- Autocomplete on plugin command parameters. Plugin authors don't currently ship enough metadata to drive autocomplete; future iteration.
 - Auto-detection of plugin install/uninstall at runtime. Requires bot restart or manual `/plugins-sync`.
 - Namespace collision resolution beyond first-wins + bot-wins. No `<plugin>--<command>` prefixing.
 
@@ -32,11 +34,12 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 
 ```
 [Discord]
-    ↓ /autoresearch args:"AI agents"
+    ↓ /autoresearch topic:"AI agents"
+    ↓ (or /autoresearch args:"AI agents" if the command has no argument-hint)
 [claudecode-discord bot]
     ↓ interaction.ts: dispatch by command name
 [PluginCommandBridge]                              ← new
-    ↓ build prompt text: "/autoresearch AI agents"
+    ↓ reconstruct prompt in declaration order: "/autoresearch AI agents"
 [SessionManager.sendMessage(channelId, prompt, replyTarget)]   ← existing, refactored
     ↓ Claude Agent SDK query()
 [Claude session in registered project dir]
@@ -66,11 +69,59 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 8. Call `SessionManager.sendMessage(channelId, prompt, replyTarget)`.
 9. Existing streaming / heartbeat / tool-approval / stop-button flow handles the rest.
 
+## `argument-hint` Parsing Semantics
+
+The `argument-hint:` frontmatter field is a freeform display string in Claude Code (not a structured schema). The bridge parses it into Discord parameter slots using this grammar:
+
+### Grammar
+
+```
+hint     := slot (whitespace+ slot)*
+slot     := required | optional
+required := "<" name (whitespace description)? ">"
+optional := "[" name (whitespace description)? "]"
+name     := [a-zA-Z][a-zA-Z0-9_-]*
+```
+
+### Examples
+
+| `argument-hint` value | Generated Discord parameters |
+|---|---|
+| (missing or empty) | `args` (optional string, description: "Free-form arguments") |
+| `[topic]` | `topic` (optional string) |
+| `<topic>` | `topic` (required string) |
+| `<file> [range]` | `file` (required), `range` (optional) |
+| `[topic the research topic]` | `topic` (optional, description: "the research topic") |
+| `[file] [optional: range]` | `file` (optional), `optional_range` (optional, description: "range") — see Sanitization |
+
+### Sanitization
+
+- Param **name** must match `^[a-z0-9_-]{1,32}$`. Parser lowercases the captured name and replaces invalid chars with `_`. Empty / leading-digit names get prefixed with `arg_`. Names longer than 32 chars are truncated.
+- Param **description** is the text after the name within the same bracket pair, trimmed. If empty, falls back to the param name. Truncated to 100 chars.
+- Discord requires **required parameters before optional** in declaration order. Parser reorders silently, preserving original index for prompt construction (see Prompt Construction below).
+- Max **25 parameters** per Discord command. Parser truncates trailing slots with a warning.
+- Duplicate param names get suffixed with `_2`, `_3`, etc.
+
+### Fallback (no `argument-hint`)
+
+When `argument-hint:` is missing or unparseable, the command gets a single optional string parameter named `args` with description "Free-form arguments". This is what `claude-obsidian`'s current 4 commands will get on day one (they currently have no `argument-hint:`).
+
+### Prompt Construction
+
+When a slash command fires:
+
+1. Collect all parameter values **in their original declaration order from `argument-hint`** (not Discord's reordered required-first order).
+2. Trim each value; drop empty trailing values.
+3. Join remaining values with single spaces.
+4. Final prompt: `/${commandName}${joined ? ' ' + joined : ''}`.
+
+Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (required), then `file` (optional). User fills `range=10-20`, `file=foo.md`. Bridge sends to Claude: `/<commandName> foo.md 10-20`.
+
 ## Component Breakdown
 
 ### New files
 
-**`src/plugins/discovery.ts`** (~120 lines)
+**`src/plugins/discovery.ts`** (~150 lines)
 - `scanInstalledPlugins(): Promise<DiscoveredCommand[]>`
 - Reads the Claude plugin manifest. Path resolution:
   - macOS / Linux: `~/.claude/plugins/installed_plugins.json`
@@ -80,22 +131,35 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 - Iterates plugins in **alphabetical order by plugin key** (e.g. `claude-obsidian@claude-obsidian-marketplace`) so first-wins collisions are deterministic across machines and reboots.
 - For each plugin entry, lists `<installPath>/commands/*.md`.
 - Parses frontmatter (hand-rolled minimal parser — extract `description` and `argument-hint`, no nested YAML).
-- Returns `{ pluginName, commandName, description, argumentHint?, sourcePath }[]`.
-- Logs warnings for: missing install path, malformed JSON, malformed frontmatter, invalid Discord names.
+- Parses `argument-hint` via `parseArgumentHint(hint: string): ParsedParam[]` (see `argument-hint` Parsing Semantics section). Returns empty array → caller applies the `args` fallback.
+- Returns `{ pluginName, commandName, description, parsedParams: ParsedParam[], sourcePath }[]`.
+- Logs warnings for: missing install path, malformed JSON, malformed frontmatter, invalid Discord names, unparseable hint slots, sanitized param names, truncated slots over the 25 limit.
 
-**`src/plugins/registry.ts`** (~80 lines)
+**`src/plugins/argument-hint.ts`** (~70 lines)
+- `parseArgumentHint(hint: string): ParsedParam[]`
+- Returns `{ name: string, description: string, required: boolean, originalIndex: number }[]` — `originalIndex` is the slot's position in the original hint, used for prompt construction.
+- Handles sanitization (name regex, description truncation, duplicate suffixing, 25-param truncation).
+- Pure function; no I/O. Heavily unit-tested with the examples table from the spec.
+
+**`src/plugins/registry.ts`** (~100 lines)
 - In-memory store: `Map<commandName, RegisteredPluginCommand>`.
 - `register(discovered: DiscoveredCommand[])` — merge with bot-owned name set, log conflicts.
 - `lookup(name: string)` — for `interaction.ts` dispatch.
 - `list()` — for `/plugins-list`.
-- `toDiscordCommands()` — emit `SlashCommandBuilder[]` for guild registration.
+- `toDiscordCommands()` — for each registered command, build a `SlashCommandBuilder`:
+  - If `parsedParams.length === 0` → add a single optional string option `args` ("Free-form arguments").
+  - Else, **add required params first, then optional** (Discord ordering requirement), each as `addStringOption(opt => opt.setName(...).setDescription(...).setRequired(...))`.
+  - Store the original `parsedParams` (with `originalIndex`) alongside the registered entry so the bridge can reconstruct the prompt in declaration order.
 
-**`src/plugins/bridge.ts`** (~100 lines)
+**`src/plugins/bridge.ts`** (~120 lines)
 - `handlePluginCommand(interaction, registered)`:
   - Channel-registered guard → ephemeral error if not.
   - Concurrent-session guard → ephemeral error if active.
   - `interaction.deferReply()`.
-  - Build prompt string.
+  - Build prompt string from `registered.parsedParams`:
+    - If `parsedParams.length === 0` → read the single `args` option (may be empty).
+    - Else → for each param sorted by `originalIndex`, read `interaction.options.getString(param.name) ?? ''`. Trim, drop empty trailing values, join with single spaces.
+    - Final prompt: `/${commandName}${joined ? ' ' + joined : ''}`.
   - Wrap interaction in `InteractionReplyTarget` (implements `ReplyTarget` interface).
   - Call `SessionManager.sendMessage(...)`.
   - On uncaught exception: `interaction.editReply()` with error text + session cleanup.
@@ -168,6 +232,19 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 | Plugin has no `commands/` directory | Silent skip (normal case for `superpowers`, `discord`). |
 | Malformed frontmatter in a `.md` file | Skip that file; log warning; continue. |
 
+### Argument-hint parsing
+
+| Situation | Behavior |
+|---|---|
+| `argument-hint:` missing | Apply fallback: single optional `args` parameter. |
+| `argument-hint:` is empty string | Apply fallback. |
+| Hint has no `<…>` or `[…]` slots (just freeform text) | Apply fallback; log warning naming the command. |
+| Hint mixes `<>` and `[]` (required + optional) | Both honored; required reordered to front for Discord. Original index preserved for prompt construction. |
+| Slot name has invalid chars / leading digit / empty | Sanitize per rules; log warning. |
+| Duplicate slot names within one hint | Suffix duplicates `_2`, `_3`. Log warning. |
+| > 25 slots | Truncate trailing slots, log warning. Command still registers. |
+| Unclosed bracket (`<topic` or `[file`) | Parser ignores the unclosed slot; if zero valid slots remain, apply fallback. Log warning. |
+
 ### Name conflicts
 
 | Situation | Behavior |
@@ -214,11 +291,12 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 - Confirm the autoresearch skill fires (check log output, tool invocations, wiki file changes).
 - **Gate:** If this fails, redesign the bridge to use the fallback strategy (inline command body + args) before any further code is written.
 
-### Phase 1 — Discovery + registry (no Discord integration yet)
+### Phase 1 — Discovery + parser + registry (no Discord integration yet)
 
+- Implement `src/plugins/argument-hint.ts` — pure parser, fully unit-tested with the examples table from the spec plus edge cases (sanitization, dupes, truncation, unclosed brackets).
 - Implement `src/plugins/discovery.ts` and `src/plugins/registry.ts`.
-- Unit tests covering: empty manifest, malformed JSON, missing install paths, plugin with no `commands/`, plugin with valid commands, name collisions, invalid Discord names, oversized descriptions.
-- Dev script: `npm run scripts:list-plugin-commands` — prints discovered commands as a table.
+- Unit tests covering: empty manifest, malformed JSON, missing install paths, plugin with no `commands/`, plugin with valid commands, name collisions, invalid Discord names, oversized descriptions, fallback when `argument-hint` is missing, mixed required+optional ordering.
+- Dev script: `npm run scripts:list-plugin-commands` — prints discovered commands as a table including parsed params.
 
 ### Phase 2 — `ReplyTarget` refactor
 
@@ -238,13 +316,15 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 
 - `/register` a Discord channel to `claude-obsidian` vault.
 - Test cases:
-  - `/autoresearch args:"AI agents"` — full pipeline runs, response streams.
-  - `/wiki` (empty args) — runs scaffold/status logic.
-  - `/save` — files current conversation.
+  - `/autoresearch args:"AI agents"` — falls through fallback (no `argument-hint:` yet), runs full pipeline.
+  - `/wiki` with empty `args` — runs scaffold/status logic.
+  - `/save args:"my insight"` — runs save with title.
+  - Add a temporary `argument-hint: "[topic]"` to `autoresearch.md`, run `/plugins-sync`, verify Discord now shows `topic` parameter instead of `args`. `/autoresearch topic:"AI agents"` runs the same prompt.
+  - Required+optional mix: temporarily set `argument-hint: "<file> [range]"` on a test command, verify Discord shows `file` first (required), `range` second (optional), and prompt reconstructs in declaration order regardless of fill order.
   - Same commands in an unregistered channel — proper error.
   - Same commands while session is active — proper busy error.
   - `/plugins-sync` after manually editing a `commands/*.md` description — sees update.
-  - `/plugins-list` shows correct table.
+  - `/plugins-list` shows correct table including parsed-param column.
 
 ## Backward Compatibility
 
@@ -273,8 +353,8 @@ Furthermore, the user wants the system to be **plugin-agnostic**: any Claude plu
 ## Estimated Effort
 
 - Phase 0: 30 minutes
-- Phase 1: 2-3 hours
+- Phase 1: 4-5 hours (added the argument-hint parser + its test matrix)
 - Phase 2: 2-3 hours (refactor is the wildcard)
 - Phase 3: 2 hours
-- Phase 4: 1 hour
-- **Total: 1-2 working days**
+- Phase 4: 1-2 hours
+- **Total: 1.5-2 working days**
