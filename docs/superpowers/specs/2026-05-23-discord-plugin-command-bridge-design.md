@@ -151,18 +151,19 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
   - Else, **add required params first, then optional** (Discord ordering requirement), each as `addStringOption(opt => opt.setName(...).setDescription(...).setRequired(...))`.
   - Store the original `parsedParams` (with `originalIndex`) alongside the registered entry so the bridge can reconstruct the prompt in declaration order.
 
-**`src/plugins/bridge.ts`** (~120 lines)
-- `handlePluginCommand(interaction, registered)`:
-  - Channel-registered guard → ephemeral error if not.
-  - Concurrent-session guard → ephemeral error if active.
-  - `interaction.deferReply()`.
+**`src/plugins/bridge.ts`** (~90 lines)
+- `handlePluginCommand(interaction: ChatInputCommandInteraction, registered: RegisteredPluginCommand)`:
+  - Channel-registered guard: `getProject(interaction.channelId)` returns null → `interaction.editReply()` with "channel not registered" message, return.
+  - Concurrent-session guard: `sessionManager.isActive(interaction.channelId)` (or equivalent) → `interaction.editReply()` with busy message, return.
+  - Note: `client.ts` already called `interaction.deferReply()` before dispatching, so no need to call it here.
   - Build prompt string from `registered.parsedParams`:
     - If `parsedParams.length === 0` → read the single `args` option (may be empty).
     - Else → for each param sorted by `originalIndex`, read `interaction.options.getString(param.name) ?? ''`. Trim, drop empty trailing values, join with single spaces.
     - Final prompt: `/${commandName}${joined ? ' ' + joined : ''}`.
-  - Wrap interaction in `InteractionReplyTarget` (implements `ReplyTarget` interface).
-  - Call `SessionManager.sendMessage(...)`.
-  - On uncaught exception: `interaction.editReply()` with error text + session cleanup.
+  - `await interaction.editReply(\`Running \\\`${prompt}\\\`\`)` — acknowledge the slash invocation in the slash-command bubble.
+  - Fetch the `TextChannel` from `interaction.channel` (or fetchable from client/cache).
+  - `await sessionManager.sendMessage(channel, prompt)` — streaming response and tool-approval flow into fresh channel messages, identical to freeform input.
+  - On thrown exception during build/dispatch: `interaction.editReply()` with error text. session-manager errors handle themselves through existing finally-block cleanup.
 
 **`src/bot/commands/plugins-sync.ts`** (~40 lines)
 - Bot-owned slash command.
@@ -175,32 +176,17 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 ### Modified files
 
 **`src/bot/client.ts`**
-- Add to startup: `const discovered = await scanInstalledPlugins(); pluginRegistry.register(discovered);`
-- Replace existing `guild.commands.set(botOwnedCommands)` with `guild.commands.set([...botOwnedCommands, ...pluginRegistry.toDiscordCommands()])`.
+- Before the `client.on("ready", ...)` callback fires registration: `const discovered = await scanInstalledPlugins(); pluginRegistry.register(discovered);`
+- Add each registered plugin command to `commandMap` with an `execute` thunk: `commandMap.set(name, { execute: (i) => handlePluginCommand(i, registered) })`.
+- In the existing `rest.put(Routes.applicationGuildCommands(...))` call, change the body from `commands.map(c => c.data.toJSON())` to include both bot-owned and plugin-derived `SlashCommandBuilder.toJSON()` outputs.
 
-**`src/bot/handlers/interaction.ts`**
-- In the `ChatInputCommandInteraction` switch, before existing cases:
-  ```ts
-  const pluginRegistered = pluginRegistry.lookup(interaction.commandName);
-  if (pluginRegistered) {
-    return handlePluginCommand(interaction, pluginRegistered);
-  }
-  ```
-- Existing 10 bot-owned cases untouched.
+**`src/bot/handlers/interaction.ts`** — **no changes required**.
 
-**`src/claude/session-manager.ts`**
-- Extract a `ReplyTarget` interface from current `Message` usage:
-  ```ts
-  interface ReplyTarget {
-    edit(content: string | MessagePayload): Promise<unknown>;
-    reply(content: string | MessagePayload): Promise<unknown>;
-    channel: TextBasedChannel;
-  }
-  ```
-- `sendMessage(channelId, content, replyTarget: ReplyTarget)` instead of `replyTarget: Message`.
-- Add two adapters:
-  - `MessageReplyTarget` (existing freeform message path)
-  - `InteractionReplyTarget` (new slash command path; `edit` → `interaction.editReply`, `reply` → `interaction.followUp`)
+The existing slash-command dispatch lives in `src/bot/client.ts` (lines ~80-96), which uses a uniform `commandMap.get(interaction.commandName).execute(interaction)` pattern. Plugin commands enter that same map at registration time with an `execute` thunk that calls into the bridge, so dispatch is automatic — no special case in any handler.
+
+**`src/claude/session-manager.ts`** — **no changes required**.
+
+The current signature is `sessionManager.sendMessage(channel: TextChannel, prompt: string)`. Session-manager creates its own messages via `channel.send()` and edits the returned `Message` handles. The slash-command path reuses this verbatim: the bridge acknowledges the interaction (via the already-`deferReply()`'d reply from `client.ts`) and then calls `sessionManager.sendMessage(channel, prompt)` exactly like `message.ts` does. The streaming response lives in fresh channel messages just like freeform input today. UX consequence: a slash command produces an ephemeral-ish "Running `/autoresearch AI agents`…" interaction reply plus the streaming response message — matches the user-message + bot-reply rhythm of the existing freeform flow.
 
 ### Unchanged
 
@@ -298,19 +284,18 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 - Unit tests covering: empty manifest, malformed JSON, missing install paths, plugin with no `commands/`, plugin with valid commands, name collisions, invalid Discord names, oversized descriptions, fallback when `argument-hint` is missing, mixed required+optional ordering.
 - Dev script: `npm run scripts:list-plugin-commands` — prints discovered commands as a table including parsed params.
 
-### Phase 2 — `ReplyTarget` refactor
+### Phase 2 — Bridge
 
-- Extract `ReplyTarget` interface in `src/claude/session-manager.ts`.
-- Migrate existing freeform-message path to use `MessageReplyTarget`.
-- Implement `InteractionReplyTarget`.
-- Run existing `vitest` suite — must pass unchanged.
+- Add `src/plugins/bridge.ts` with `handlePluginCommand`.
+- Unit-test guard paths (no registered channel, busy channel) by mocking `getProject` and `sessionManager.isActive`.
+- No changes to `session-manager.ts`.
 
 ### Phase 3 — Wire up Discord registration
 
-- Update `src/bot/client.ts` startup sequence.
-- Add `src/plugins/bridge.ts`.
-- Add `/plugins-sync` and `/plugins-list` bot-owned commands.
-- Add dispatch in `src/bot/handlers/interaction.ts`.
+- Update `src/bot/client.ts` startup sequence to run discovery + register both bot-owned and plugin slash commands.
+- Plugin commands enter the existing `commandMap` with an `execute` thunk that calls `handlePluginCommand(interaction, registered)`.
+- Add `src/bot/commands/plugins-sync.ts` and `src/bot/commands/plugins-list.ts` bot-owned commands.
+- Note: existing dispatch in `client.ts` (lines ~80-96) handles slash commands uniformly via `commandMap.get(name).execute()` — no changes to `interaction.ts` handlers needed for the plugin path.
 
 ### Phase 4 — End-to-end verification
 
@@ -353,8 +338,8 @@ Example: `argument-hint: "[file] <range>"` → Discord shows `range` first (requ
 ## Estimated Effort
 
 - Phase 0: 30 minutes
-- Phase 1: 4-5 hours (added the argument-hint parser + its test matrix)
-- Phase 2: 2-3 hours (refactor is the wildcard)
-- Phase 3: 2 hours
-- Phase 4: 1-2 hours
-- **Total: 1.5-2 working days**
+- Phase 1: 4-5 hours (argument-hint parser + discovery + registry + their test matrix)
+- Phase 2: 1-2 hours (bridge — no session-manager refactor needed)
+- Phase 3: 2 hours (client.ts wiring + plugins-sync/list commands)
+- Phase 4: 1-2 hours (E2E manual verification)
+- **Total: 1 working day** (was 1.5-2 days; session-manager untouched saved a chunk)
