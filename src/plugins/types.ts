@@ -50,6 +50,11 @@ export interface RegisteredPluginCommand extends DiscoveredCommand {
 /**
  * An entry that was discovered but didn't make it into Discord registration.
  * Surfaced by /plugins-list so the user can see what was filtered and why.
+ *
+ * Note: invalid-Discord-name rejections happen in the discovery layer (logged
+ * as warnings, not returned here) — by the time a command reaches the registry
+ * it already has a valid name. So only name-collision and 100-cap reasons
+ * appear in this union.
  */
 export interface SkippedPluginCommand {
   pluginName: string;
@@ -57,7 +62,6 @@ export interface SkippedPluginCommand {
   reason:
     | "name-conflicts-with-bot-owned"
     | "name-conflicts-with-prior-plugin"
-    | "invalid-discord-name"
     | "exceeds-100-command-limit";
   sourcePath: string;
 }

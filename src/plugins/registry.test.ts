@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { SlashCommandBuilder } from "discord.js";
 import { PluginRegistry } from "./registry.js";
 import type { DiscoveredCommand, ParsedParam } from "./types.js";
 
@@ -231,7 +230,3 @@ describe("PluginRegistry.toSdkPluginConfig", () => {
     for (const e of cfg) expect(e.type).toBe("local");
   });
 });
-
-// Suppress unused-import warning — SlashCommandBuilder is referenced via the
-// toDiscordCommands() return type in the assertions above.
-void SlashCommandBuilder;
