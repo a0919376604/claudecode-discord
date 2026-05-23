@@ -64,3 +64,48 @@ describe("parseArgumentHint — multiple slots", () => {
     ]);
   });
 });
+
+describe("parseArgumentHint — sanitization", () => {
+  it("lowercases param names", () => {
+    expect(parseArgumentHint("[Topic]")).toEqual([
+      { name: "topic", description: "topic", required: false, originalIndex: 0 },
+    ]);
+  });
+
+  it("suffixes duplicate names with _2, _3", () => {
+    expect(parseArgumentHint("[name] [name] [name]")).toEqual([
+      { name: "name", description: "name", required: false, originalIndex: 0 },
+      { name: "name_2", description: "name", required: false, originalIndex: 1 },
+      { name: "name_3", description: "name", required: false, originalIndex: 2 },
+    ]);
+  });
+
+  it("truncates descriptions over 100 chars to 97 + '...'", () => {
+    const long = "x".repeat(150);
+    const result = parseArgumentHint(`[topic ${long}]`);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.description).toHaveLength(100);
+    expect(result[0]!.description.endsWith("...")).toBe(true);
+  });
+
+  it("truncates after 25 slots and ignores the rest", () => {
+    const slots = Array.from({ length: 30 }, (_, i) => `[p${i}]`).join(" ");
+    const result = parseArgumentHint(slots);
+    expect(result).toHaveLength(25);
+    expect(result[24]!.name).toBe("p24");
+  });
+
+  it("ignores unclosed brackets", () => {
+    expect(parseArgumentHint("[topic <unclosed [file]")).toEqual([
+      { name: "file", description: "file", required: false, originalIndex: 0 },
+    ]);
+  });
+
+  it("ignores slots with mismatched brackets ([name>)", () => {
+    expect(parseArgumentHint("[name>")).toEqual([]);
+  });
+
+  it("ignores slots starting with a digit", () => {
+    expect(parseArgumentHint("[1foo]")).toEqual([]);
+  });
+});
