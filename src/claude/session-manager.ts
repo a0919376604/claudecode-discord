@@ -185,14 +185,21 @@ class SessionManager {
           );
           const active = sessionsRef.get(channelId);
           if (active) {
-            try {
-              await active.queryInstance.interrupt();
-            } catch (e) {
+            // 3s race: interrupt() can stall indefinitely on non-streaming
+            // queries (see stopSession for the full explanation). We don't
+            // want the timeout handler itself to wedge.
+            Promise.race([
+              active.queryInstance.interrupt(),
+              new Promise((resolve) => setTimeout(resolve, 3_000)),
+            ]).catch((e) => {
               console.warn(
                 `[timeout] interrupt failed for ${channelId}:`,
                 e instanceof Error ? e.message : e,
               );
-            }
+            });
+            // Force-evict so the channel is usable again even if interrupt
+            // never returns.
+            sessionsRef.delete(channelId);
           }
           try {
             await channel.send(
@@ -514,6 +521,18 @@ class SessionManager {
 
               updateSessionStatus(channelId, isError ? "offline" : "idle");
               hasResult = true;
+              // Explicitly break out of the for-await as soon as the result
+              // is processed. We do NOT trust the SDK iterator to close on
+              // its own — in practice (string-prompt / single-user-turn
+              // mode) the SDK calls transport.endInput() after the first
+              // result, but the underlying claude CLI subprocess may take
+              // arbitrarily long to actually exit (flushing buffers, running
+              // hooks, waiting on dangling network callbacks). If the
+              // iterator stalls, this for-await blocks forever, the finally
+              // block never runs, the session entry never leaves
+              // this.sessions, and the user sees: no Stop button, can't
+              // send new messages — the exact bug the user reported.
+              break;
             }
           }
           break;
@@ -593,7 +612,15 @@ class SessionManager {
     } finally {
       clearInterval(heartbeatInterval);
       if (durationTimer) clearTimeout(durationTimer);
-      this.sessions.delete(channelId);
+      // Only clear the sessions entry if it's still OURS. If stopSession()
+      // (or a stale-loop watchdog) already deleted it and the user already
+      // started a new send, the entry under channelId now belongs to that
+      // newer invocation — wiping it here would silently break their next
+      // task. Compare by dbId since that's unique per sendMessage call.
+      const current = this.sessions.get(channelId);
+      if (current && current.dbId === dbId) {
+        this.sessions.delete(channelId);
+      }
 
       // Strip the Stop button from any lingering progress message so the
       // user can't click it on a session that's already over. We don't
@@ -634,13 +661,28 @@ class SessionManager {
     const session = this.sessions.get(channelId);
     if (!session) return false;
 
-    try {
-      await session.queryInstance.interrupt();
-    } catch {
-      // already stopped
-    }
-
+    // ALWAYS evict the entry from the map FIRST. This unblocks the channel
+    // for new messages even if interrupt() hangs (which it can: the SDK
+    // documents interrupt() as "only supported when streaming input/output
+    // is used" — we pass a string prompt, so the control request can stall
+    // indefinitely waiting for a response from a subprocess that's not
+    // listening on the control channel). The old code awaited interrupt()
+    // before deleting, so a hung interrupt left the session stuck forever.
     this.sessions.delete(channelId);
+
+    // Fire interrupt() but don't let it block. 3s hard cap; we don't care
+    // if it succeeds, we only care that we tried. The for-await loop in
+    // sendMessage will exit eventually when the subprocess actually dies,
+    // and its finally block will no-op the sessions.delete (see dbId guard).
+    Promise.race([
+      session.queryInstance.interrupt(),
+      new Promise((resolve) => setTimeout(resolve, 3_000)),
+    ]).catch((e) => {
+      console.warn(
+        `[stop] interrupt() failed for ${channelId}:`,
+        e instanceof Error ? e.message : e,
+      );
+    });
 
     // Clean up any pending approvals/questions for this channel
     for (const [id, entry] of pendingApprovals) {
