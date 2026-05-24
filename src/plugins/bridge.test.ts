@@ -45,9 +45,46 @@ function reg(
   pluginShortName = "claude-obsidian",
 ): RegisteredPluginCommand {
   return {
+    scope: "plugin",
     pluginName: `${pluginShortName}@test-marketplace`,
     pluginShortName,
     pluginInstallPath: `/fake/${pluginShortName}`,
+    commandName,
+    description: "x",
+    parsedParams,
+    sourcePath: "/fake",
+    registeredAt: Date.now(),
+  };
+}
+
+function userReg(
+  commandName: string,
+  parsedParams: RegisteredPluginCommand["parsedParams"] = [],
+): RegisteredPluginCommand {
+  return {
+    scope: "user",
+    pluginName: "<user>",
+    pluginShortName: "",
+    pluginInstallPath: "",
+    commandName,
+    description: "x",
+    parsedParams,
+    sourcePath: "/fake",
+    registeredAt: Date.now(),
+  };
+}
+
+function projectReg(
+  commandName: string,
+  parsedParams: RegisteredPluginCommand["parsedParams"] = [],
+  projectPath = "/fake/proj",
+): RegisteredPluginCommand {
+  return {
+    scope: "project",
+    pluginName: "<project>",
+    pluginShortName: "",
+    pluginInstallPath: "",
+    projectPath,
     commandName,
     description: "x",
     parsedParams,
@@ -163,6 +200,51 @@ describe("handlePluginCommand", () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.anything(),
       "/claude-obsidian:excerpt foo.md",
+    );
+  });
+
+  // User-scope commands (e.g. obsidian-init dropped at ~/.claude/commands/)
+  // are resolved by the Claude CLI under their bare name — no plugin
+  // namespace to prepend. The bot used to never see these at all; now it
+  // does, and the prompt must NOT include a `<short>:` prefix.
+  it("uses bare /<cmd> for user-scope commands (no plugin namespace)", async () => {
+    mockGetProject.mockReturnValue({ project_path: "/p" });
+    mockIsActive.mockReturnValue(false);
+    const interaction = makeInteraction({});
+
+    await handlePluginCommand(interaction as any, userReg("obsidian-init"));
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/obsidian-init",
+    );
+  });
+
+  it("user-scope command preserves args", async () => {
+    mockGetProject.mockReturnValue({ project_path: "/p" });
+    mockIsActive.mockReturnValue(false);
+    const interaction = makeInteraction({
+      options: { args: "scan vault" },
+    });
+
+    await handlePluginCommand(interaction as any, userReg("obsidian-init"));
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/obsidian-init scan vault",
+    );
+  });
+
+  it("project-scope command also dispatches as bare /<cmd>", async () => {
+    mockGetProject.mockReturnValue({ project_path: "/p" });
+    mockIsActive.mockReturnValue(false);
+    const interaction = makeInteraction({});
+
+    await handlePluginCommand(interaction as any, projectReg("my-cmd"));
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/my-cmd",
     );
   });
 });

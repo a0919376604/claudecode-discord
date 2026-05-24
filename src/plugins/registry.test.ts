@@ -11,6 +11,7 @@ function cmd(
     ? pluginName.slice(0, pluginName.indexOf("@"))
     : pluginName;
   return {
+    scope: "plugin",
     pluginName,
     pluginShortName,
     pluginInstallPath: `/fake/${pluginShortName}`,
@@ -110,6 +111,7 @@ function cmdWithParams(
     ? pluginName.slice(0, pluginName.indexOf("@"))
     : pluginName;
   return {
+    scope: "plugin",
     pluginName,
     pluginShortName,
     pluginInstallPath: `/fake/${pluginShortName}`,
@@ -170,6 +172,7 @@ describe("PluginRegistry.toDiscordCommands", () => {
   it("uses the command description as the Discord description", () => {
     registry.register([
       {
+        scope: "plugin",
         pluginName: "p1@m1",
         pluginShortName: "p1",
         pluginInstallPath: "/fake/p1",
@@ -197,6 +200,7 @@ describe("PluginRegistry.toSdkPluginConfig", () => {
   it("emits one entry per distinct plugin install path", () => {
     registry.register([
       {
+        scope: "plugin",
         pluginName: "p1@m1",
         pluginShortName: "p1",
         pluginInstallPath: "/fake/p1",
@@ -206,6 +210,7 @@ describe("PluginRegistry.toSdkPluginConfig", () => {
         sourcePath: "/fake/p1/a.md",
       },
       {
+        scope: "plugin",
         pluginName: "p1@m1",
         pluginShortName: "p1",
         pluginInstallPath: "/fake/p1",
@@ -215,6 +220,7 @@ describe("PluginRegistry.toSdkPluginConfig", () => {
         sourcePath: "/fake/p1/b.md",
       },
       {
+        scope: "plugin",
         pluginName: "p2@m1",
         pluginShortName: "p2",
         pluginInstallPath: "/fake/p2",

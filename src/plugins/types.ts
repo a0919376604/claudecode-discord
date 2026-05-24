@@ -19,19 +19,46 @@ export interface ParsedParam {
 }
 
 /**
- * One command discovered from a plugin's commands/ directory.
+ * Where a slash command lives on disk. Determines:
+ *   - how the bridge builds the Claude prompt
+ *     ("plugin" → `/<short>:<cmd>` namespaced; "user"/"project" → bare `/<cmd>`)
+ *   - whether the registry passes a `{type:"local",path}` entry to the SDK
+ *     `plugins` option (only "plugin"; user/project commands are auto-discovered
+ *     by the Claude CLI based on cwd + $HOME)
  *
- * Three plugin-identity fields are populated:
+ * The three locations correspond to Claude Code's own command-resolution
+ * scopes: plugin commands ship inside an installed plugin; user commands live
+ * at `~/.claude/commands/`; project commands live at
+ * `<cwd>/.claude/commands/`.
+ */
+export type CommandScope = "plugin" | "user" | "project";
+
+/**
+ * One slash command discovered on disk.
+ *
+ * For "plugin" scope, all three plugin-identity fields are real:
  * - `pluginName`: full marketplace key, e.g. "claude-obsidian@claude-obsidian-marketplace"
  * - `pluginShortName`: the part before "@", used in namespaced command invocation
  *   (the SDK exposes plugin commands as "claude-obsidian:autoresearch")
  * - `pluginInstallPath`: absolute path to the plugin install dir, passed into
  *   query({ plugins: [{ type: 'local', path: ... }] }) so the SDK loads it
+ *
+ * For "user" scope, plugin fields are sentinel-empty:
+ * - `pluginName = "<user>"`, `pluginShortName = ""`, `pluginInstallPath = ""`
+ *
+ * For "project" scope, plugin fields hold project metadata:
+ * - `pluginName = "<project>"`, `pluginShortName = ""`, `pluginInstallPath = ""`
+ * - `projectPath` is the project root (the cwd that owns this command)
+ *
+ * Bridge + registry read `scope` (not the sentinel strings) — the sentinels
+ * exist only to keep tests/code paths that touched the old schema working.
  */
 export interface DiscoveredCommand {
+  scope: CommandScope;
   pluginName: string;
   pluginShortName: string;
   pluginInstallPath: string;
+  projectPath?: string; // set iff scope === "project"
   commandName: string; // sanitized; matches the .md filename without extension
   description: string; // from frontmatter, truncated to 100 chars
   parsedParams: ParsedParam[]; // empty array → bridge uses single-`args` fallback

@@ -28,9 +28,10 @@ import * as usageCmd from "./commands/usage.js";
 import * as pluginsSyncCmd from "./commands/plugins-sync.js";
 import * as pluginsListCmd from "./commands/plugins-list.js";
 
-import { scanInstalledPlugins } from "../plugins/discovery.js";
+import { scanAllCommandSources } from "../plugins/discovery.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { handlePluginCommand } from "../plugins/bridge.js";
+import { getAllProjects } from "../db/database.js";
 
 const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd];
 export const botOwnedCommandNames = new Set(commands.map((c) => c.data.name));
@@ -59,9 +60,18 @@ export async function startBot(): Promise<Client> {
   client.on("ready", async () => {
     console.log(`Bot logged in as ${client.user?.tag}`);
 
-    // Discover and register plugin commands before pushing slash commands to Discord
+    // Discover and register plugin + user + project commands before pushing
+    // slash commands to Discord. User-scope commands live at
+    // ~/.claude/commands/ (where setup scripts like obsidian-second-brain
+    // drop their .md files) — those used to be invisible to the bot because
+    // discovery only scanned plugin-installed commands. Project-scope is
+    // per-cwd; we scan every registered project so guild-wide slash
+    // commands can include them.
     try {
-      const discovery = await scanInstalledPlugins();
+      const projectPaths = getAllProjects(config.DISCORD_GUILD_ID).map(
+        (p) => p.project_path,
+      );
+      const discovery = await scanAllCommandSources({ projectPaths });
       for (const w of discovery.warnings) console.warn(`[plugins] ${w}`);
 
       const result = pluginRegistry.register(discovery.commands);

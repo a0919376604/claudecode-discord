@@ -95,6 +95,12 @@ export class PluginRegistry {
     const seen = new Set<string>();
     const out: { type: "local"; path: string }[] = [];
     for (const cmd of this.list()) {
+      // Only plugin-scope commands need an SDK plugins entry — user and
+      // project scope commands are auto-discovered by the Claude CLI from
+      // $HOME and cwd respectively, and they have empty install paths
+      // anyway. Without this guard we would pass `{ type:"local", path:"" }`
+      // to the SDK and trigger a confusing load error.
+      if (cmd.scope !== "plugin") continue;
       if (seen.has(cmd.pluginInstallPath)) continue;
       seen.add(cmd.pluginInstallPath);
       out.push({ type: "local", path: cmd.pluginInstallPath });

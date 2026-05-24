@@ -59,7 +59,16 @@ function buildPrompt(
   interaction: ChatInputCommandInteraction,
   registered: RegisteredPluginCommand,
 ): string {
-  const slashName = `${registered.pluginShortName}:${registered.commandName}`;
+  // Plugin-scope commands are exposed by the SDK under their namespaced form
+  // (`/<plugin>:<cmd>`) — bare names don't dispatch for plugins (Phase 0
+  // finding). User and project scope commands, on the other hand, ARE
+  // resolved by Claude under their bare names (the CLI looks at
+  // ~/.claude/commands and <cwd>/.claude/commands directly), and there is no
+  // plugin shortname to namespace against — so we send `/<cmd>` as-is.
+  const slashName =
+    registered.scope === "plugin"
+      ? `${registered.pluginShortName}:${registered.commandName}`
+      : registered.commandName;
 
   if (registered.parsedParams.length === 0) {
     const args = (interaction.options.getString("args") ?? "").trim();

@@ -5,7 +5,7 @@ import {
   Routes,
   PermissionFlagsBits,
 } from "discord.js";
-import { scanInstalledPlugins } from "../../plugins/discovery.js";
+import { scanAllCommandSources } from "../../plugins/discovery.js";
 import {
   pluginRegistry,
   commandMap,
@@ -13,11 +13,12 @@ import {
 } from "../client.js";
 import { handlePluginCommand } from "../../plugins/bridge.js";
 import { getConfig } from "../../utils/config.js";
+import { getAllProjects } from "../../db/database.js";
 import { L } from "../../utils/i18n.js";
 
 export const data = new SlashCommandBuilder()
   .setName("plugins-sync")
-  .setDescription("Re-scan installed Claude plugins and refresh Discord slash commands")
+  .setDescription("Re-scan installed Claude plugins + user/project commands and refresh Discord")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(
@@ -32,7 +33,10 @@ export async function execute(
   // fail to resolve. Probability is low (sync is admin-only and rare; sessions
   // are also serialized per channel via the isActive guard). Worst case: one
   // failed plugin command, recoverable by re-invoking. Not worth a lock today.
-  const discovery = await scanInstalledPlugins();
+  const projectPaths = getAllProjects(config.DISCORD_GUILD_ID).map(
+    (p) => p.project_path,
+  );
+  const discovery = await scanAllCommandSources({ projectPaths });
   pluginRegistry.clear();
   const result = pluginRegistry.register(discovery.commands);
 

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { scanInstalledPlugins } from "./discovery.js";
+import {
+  scanInstalledPlugins,
+  scanUserCommands,
+  scanProjectCommands,
+  scanAllCommandSources,
+} from "./discovery.js";
 
 let tmpHome: string;
 
@@ -192,5 +197,155 @@ describe("scanInstalledPlugins — scanning commands/", () => {
     const result = await scanInstalledPlugins({ homeDir: tmpHome });
     // aaa@m1 sorts before zzz@m1, so "second" should appear first
     expect(result.commands.map((c) => c.commandName)).toEqual(["second", "first"]);
+  });
+
+  it("tags discovered plugin commands with scope='plugin'", async () => {
+    const pluginPath = makePlugin(tmpHome, "p1", {
+      "x.md": `---\ndescription: X.\n---`,
+    });
+    writeManifest(tmpHome, { "p1@m1": pluginPath });
+    const result = await scanInstalledPlugins({ homeDir: tmpHome });
+    expect(result.commands[0]!.scope).toBe("plugin");
+  });
+});
+
+describe("scanUserCommands", () => {
+  it("returns [] when ~/.claude/commands does not exist", async () => {
+    // tmpHome only has .claude/plugins, not .claude/commands
+    const result = await scanUserCommands({ homeDir: tmpHome });
+    expect(result.commands).toEqual([]);
+  });
+
+  it("discovers .md files under ~/.claude/commands and tags them user", async () => {
+    const userCmdDir = path.join(tmpHome, ".claude", "commands");
+    fs.mkdirSync(userCmdDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userCmdDir, "obsidian-init.md"),
+      `---\ndescription: Init vault.\n---\nbody`,
+    );
+
+    const result = await scanUserCommands({ homeDir: tmpHome });
+    expect(result.commands).toHaveLength(1);
+    expect(result.commands[0]).toMatchObject({
+      scope: "user",
+      pluginName: "<user>",
+      pluginShortName: "",
+      pluginInstallPath: "",
+      commandName: "obsidian-init",
+      description: "Init vault.",
+    });
+  });
+
+  it("rejects invalid Discord names in user commands too", async () => {
+    const userCmdDir = path.join(tmpHome, ".claude", "commands");
+    fs.mkdirSync(userCmdDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userCmdDir, "Bad_Name.md"),
+      `---\ndescription: Bad.\n---`,
+    );
+    const result = await scanUserCommands({ homeDir: tmpHome });
+    expect(result.commands).toEqual([]);
+    expect(result.warnings.some((w) => w.includes("Bad_Name"))).toBe(true);
+  });
+});
+
+describe("scanProjectCommands", () => {
+  it("returns [] when <project>/.claude/commands does not exist", async () => {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"));
+    try {
+      const result = await scanProjectCommands({ projectPath });
+      expect(result.commands).toEqual([]);
+    } finally {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers project commands and stamps projectPath", async () => {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"));
+    try {
+      const cmdDir = path.join(projectPath, ".claude", "commands");
+      fs.mkdirSync(cmdDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(cmdDir, "deploy.md"),
+        `---\ndescription: Deploy this project.\n---`,
+      );
+
+      const result = await scanProjectCommands({ projectPath });
+      expect(result.commands).toHaveLength(1);
+      expect(result.commands[0]).toMatchObject({
+        scope: "project",
+        pluginName: "<project>",
+        projectPath,
+        commandName: "deploy",
+      });
+    } finally {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scanAllCommandSources", () => {
+  it("aggregates plugin + user + project commands", async () => {
+    // Plugin source
+    const pluginPath = makePlugin(tmpHome, "p1", {
+      "from-plugin.md": `---\ndescription: P.\n---`,
+    });
+    writeManifest(tmpHome, { "p1@m1": pluginPath });
+    // User source
+    const userCmdDir = path.join(tmpHome, ".claude", "commands");
+    fs.mkdirSync(userCmdDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userCmdDir, "from-user.md"),
+      `---\ndescription: U.\n---`,
+    );
+    // Project source
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"));
+    try {
+      const projDir = path.join(projectPath, ".claude", "commands");
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projDir, "from-project.md"),
+        `---\ndescription: Pj.\n---`,
+      );
+
+      const result = await scanAllCommandSources({
+        homeDir: tmpHome,
+        projectPaths: [projectPath],
+      });
+
+      const byName = Object.fromEntries(
+        result.commands.map((c) => [c.commandName, c.scope]),
+      );
+      expect(byName).toEqual({
+        "from-plugin": "plugin",
+        "from-user": "user",
+        "from-project": "project",
+      });
+    } finally {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates repeated project paths", async () => {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"));
+    try {
+      const projDir = path.join(projectPath, ".claude", "commands");
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(projDir, "once.md"),
+        `---\ndescription: Once.\n---`,
+      );
+
+      const result = await scanAllCommandSources({
+        homeDir: tmpHome,
+        projectPaths: [projectPath, projectPath, projectPath],
+      });
+      // Even though the same project appears three times in the channel→project
+      // mapping, we should only see one "once" command — first-wins through the
+      // dedupe guard in scanAllCommandSources.
+      expect(result.commands.filter((c) => c.commandName === "once")).toHaveLength(1);
+    } finally {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
   });
 });
