@@ -89,15 +89,23 @@ function readKeychain(): KeychainRecord | null {
  *
  * macOS-only for v1; silently no-ops on other platforms.
  */
+let inFlight: Promise<void> | null = null;
+
 export async function ensureFreshCredentials(): Promise<void> {
-  try {
-    await doRefresh();
-  } catch (e) {
-    console.warn(
-      "[credentials-refresher] Unexpected error:",
-      e instanceof Error ? e.message : e,
-    );
-  }
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    try {
+      await doRefresh();
+    } catch (e) {
+      console.warn(
+        "[credentials-refresher] Unexpected error:",
+        e instanceof Error ? e.message : e,
+      );
+    } finally {
+      inFlight = null;
+    }
+  })();
+  return inFlight;
 }
 
 function needsRefresh(

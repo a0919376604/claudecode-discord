@@ -242,4 +242,31 @@ describe("ensureFreshCredentials", () => {
     const payload = JSON.parse(args[args.indexOf("-w") + 1]);
     expect(payload.claudeAiOauth.refreshToken).toBe("sk-ant-ort01-original");
   });
+
+  it("deduplicates concurrent calls", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.USER = "testuser";
+    mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: "sk-ant-oat01-new",
+        refresh_token: "sk-ant-ort01-new",
+        expires_in: 28800,
+      })),
+    );
+
+    await Promise.all([
+      ensureFreshCredentials(),
+      ensureFreshCredentials(),
+      ensureFreshCredentials(),
+      ensureFreshCredentials(),
+      ensureFreshCredentials(),
+    ]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const writeCalls = vi.mocked(execFileSync).mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
+    );
+    expect(writeCalls).toHaveLength(1);
+  });
 });
