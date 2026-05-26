@@ -1,8 +1,10 @@
-import type { ChatInputCommandInteraction, TextChannel } from "discord.js";
+import type { AutocompleteInteraction, ChatInputCommandInteraction, TextChannel } from "discord.js";
 import { getProject } from "../db/database.js";
 import { sessionManager } from "../claude/session-manager.js";
 import { L } from "../utils/i18n.js";
 import type { RegisteredPluginCommand } from "./types.js";
+import { listProjectSubdirs } from "../utils/project-dirs.js";
+import { PluginRegistry } from "./registry.js";
 
 /**
  * Discord slash command handler for any plugin-derived command.
@@ -53,6 +55,42 @@ export async function handlePluginCommand(
 
   const channel = interaction.channel as TextChannel;
   await sessionManager.sendMessage(channel, prompt);
+}
+
+/**
+ * Discord slash-command autocomplete handler for plugin-derived commands.
+ *
+ * client.ts dispatches here when the focused interaction targets a command
+ * that lives in `pluginRegistry` (i.e. not a bot-owned command). The handler
+ * inspects the focused param's `type`; only path-typed params get the
+ * BASE_PROJECT_DIR walk. Everything else returns [].
+ */
+export async function handlePluginAutocomplete(
+  interaction: AutocompleteInteraction,
+  registry: PluginRegistry,
+): Promise<void> {
+  const registered = registry.lookup(interaction.commandName);
+  if (!registered) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  const param = registered.parsedParams.find((p) => p.name === focused.name);
+  if (!param || param.type !== "path") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const project = getProject(interaction.channelId);
+  const choices = listProjectSubdirs({
+    focused: focused.value,
+    includeBaseDirSelf: false,
+    includeCreateNew: false,
+    starredAbsolutePath: project?.project_path,
+  });
+
+  await interaction.respond(choices.slice(0, 25));
 }
 
 function buildPrompt(
