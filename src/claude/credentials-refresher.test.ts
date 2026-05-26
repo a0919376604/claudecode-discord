@@ -14,13 +14,21 @@ vi.mock("node:child_process", () => ({
   execFileSync: vi.fn(),
 }));
 
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return {
+    ...actual,
+    default: { ...actual, userInfo: vi.fn(() => ({ username: "testuser", uid: 0, gid: 0, shell: null, homedir: "/tmp" })) },
+    userInfo: vi.fn(() => ({ username: "testuser", uid: 0, gid: 0, shell: null, homedir: "/tmp" })),
+  };
+});
+
 import { execFileSync } from "node:child_process";
 
 import { ensureFreshCredentials } from "./credentials-refresher.js";
 
 describe("ensureFreshCredentials", () => {
   const originalPlatform = process.platform;
-  const originalUser = process.env.USER;
 
   beforeEach(() => {
     mockConfig.CLAUDE_AUTO_REFRESH = true;
@@ -30,11 +38,6 @@ describe("ensureFreshCredentials", () => {
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: originalPlatform });
-    if (originalUser === undefined) {
-      delete process.env.USER;
-    } else {
-      process.env.USER = originalUser;
-    }
     vi.restoreAllMocks();
   });
 
@@ -190,7 +193,6 @@ describe("ensureFreshCredentials", () => {
 
   it("writes refreshed creds back to Keychain preserving subscriptionType and scopes", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    process.env.USER = "testuser";
     mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
@@ -219,14 +221,13 @@ describe("ensureFreshCredentials", () => {
     expect(Math.abs(payload.claudeAiOauth.expiresAt - expectedExpiry)).toBeLessThan(5000);
     // -U flag for update-if-exists
     expect(args).toContain("-U");
-    // -a flag with our USER env
+    // -a flag uses os.userInfo().username (mocked to "testuser")
     const aIdx = args.indexOf("-a");
     expect(args[aIdx + 1]).toBe("testuser");
   });
 
   it("preserves existing refresh token if response omits it", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    process.env.USER = "testuser";
     mockKeychainCreds({
       expiresAt: Date.now() + 5 * 60 * 1000,
       refreshToken: "sk-ant-ort01-original",
@@ -251,7 +252,6 @@ describe("ensureFreshCredentials", () => {
 
   it("deduplicates concurrent calls", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    process.env.USER = "testuser";
     mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({

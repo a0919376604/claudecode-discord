@@ -1,5 +1,6 @@
 import { getConfig } from "../utils/config.js";
 import { execFileSync } from "node:child_process";
+import os from "node:os";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 // OAuth refresh endpoint and client identifier used by the official
@@ -68,8 +69,21 @@ function readKeychain(): KeychainRecord | null {
     return null;
   }
 
-  // Account name is the macOS username (matches what the official CLI uses)
-  const account = process.env.USER ?? "";
+  // Account name is the macOS username, looked up via os.userInfo()
+  // (matches the official CLI). os.userInfo() throws if there is no
+  // user — which is the right semantics here, since we can't refresh
+  // credentials for nobody. Wrap so we degrade gracefully rather than
+  // crash if it ever fires.
+  let account: string;
+  try {
+    account = os.userInfo().username;
+  } catch (e) {
+    console.warn(
+      "[credentials-refresher] Could not determine current user:",
+      e instanceof Error ? e.message : e,
+    );
+    return null;
+  }
   return {
     creds: {
       accessToken: c.accessToken,
