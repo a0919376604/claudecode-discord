@@ -171,8 +171,8 @@ describe("handlePluginCommand", () => {
     });
 
     const command = reg("excerpt", [
-      { name: "file", description: "file", required: true, originalIndex: 0 },
-      { name: "range", description: "range", required: false, originalIndex: 1 },
+      { name: "file", description: "file", required: true, originalIndex: 0, type: "text" },
+      { name: "range", description: "range", required: false, originalIndex: 1, type: "text" },
     ]);
 
     await handlePluginCommand(interaction as any, command);
@@ -191,8 +191,8 @@ describe("handlePluginCommand", () => {
     });
 
     const command = reg("excerpt", [
-      { name: "file", description: "file", required: true, originalIndex: 0 },
-      { name: "range", description: "range", required: false, originalIndex: 1 },
+      { name: "file", description: "file", required: true, originalIndex: 0, type: "text" },
+      { name: "range", description: "range", required: false, originalIndex: 1, type: "text" },
     ]);
 
     await handlePluginCommand(interaction as any, command);

@@ -145,8 +145,8 @@ describe("scanInstalledPlugins — scanning commands/", () => {
 
     const result = await scanInstalledPlugins({ homeDir: tmpHome });
     expect(result.commands[0]!.parsedParams).toEqual([
-      { name: "query", description: "query", required: true, originalIndex: 0 },
-      { name: "path", description: "path", required: false, originalIndex: 1 },
+      { name: "query", description: "query", required: true, originalIndex: 0, type: "text" },
+      { name: "path", description: "path", required: false, originalIndex: 1, type: "path" },
     ]);
   });
 

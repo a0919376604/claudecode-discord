@@ -99,7 +99,7 @@ function param(
   originalIndex: number,
   description = name,
 ): ParsedParam {
-  return { name, description, required, originalIndex };
+  return { name, description, required, originalIndex, type: "text" };
 }
 
 function cmdWithParams(
