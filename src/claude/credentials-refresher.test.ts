@@ -87,4 +87,40 @@ describe("ensureFreshCredentials", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  function mockKeychainCreds(overrides: Partial<{ expiresAt: number; refreshToken: string }> = {}) {
+    const payload = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-existing",
+        refreshToken: overrides.refreshToken ?? "sk-ant-ort01-existing",
+        expiresAt: overrides.expiresAt ?? Date.now() + 2 * 60 * 60 * 1000, // 2h out
+        scopes: ["user:inference"],
+        subscriptionType: "team",
+        rateLimitTier: "default_claude_max_5x",
+      },
+    });
+    vi.mocked(execFileSync).mockReturnValue(payload as never);
+  }
+
+  it("does not call fetch when token is well within threshold", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    mockKeychainCreds({ expiresAt: Date.now() + 2 * 60 * 60 * 1000 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await ensureFreshCredentials();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("calls fetch when token expires within threshold", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 }); // 5 min
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: "new-access",
+        refresh_token: "new-refresh",
+        expires_in: 28800,
+      })),
+    );
+    await ensureFreshCredentials();
+    expect(fetchSpy).toHaveBeenCalled();
+  });
 });

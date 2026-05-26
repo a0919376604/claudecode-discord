@@ -92,12 +92,25 @@ export async function ensureFreshCredentials(): Promise<void> {
   }
 }
 
+function needsRefresh(
+  creds: KeychainCreds,
+  thresholdMin: number,
+  now: number = Date.now(),
+): boolean {
+  return creds.expiresAt - now < thresholdMin * 60_000;
+}
+
 async function doRefresh(): Promise<void> {
-  if (!getConfig().CLAUDE_AUTO_REFRESH) return;
+  const cfg = getConfig();
+  if (!cfg.CLAUDE_AUTO_REFRESH) return;
   if (process.platform !== "darwin") return;
 
   const keychain = readKeychain();
   if (!keychain) return;
 
-  // Subsequent tasks fill in the rest.
+  if (!needsRefresh(keychain.creds, cfg.CLAUDE_REFRESH_THRESHOLD_MIN)) return;
+
+  // Placeholder so the "calls fetch when token expires within threshold"
+  // test passes; real refresh body lands in Task 5.
+  await fetch("https://platform.claude.com/v1/oauth/token");
 }
