@@ -75,6 +75,8 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
 **전제 조건:** macOS, 최소 한 번은 `claude login`으로 로그인된 상태,
 봇은 중지된 상태.
 
+> 도중에 문제가 생기면 `claude login`을 실행해 Keychain 항목을 새 자격 증명으로 덮어쓸 수 있습니다.
+
 1. 현재 Keychain 항목의 `expiresAt`을 확인합니다:
    ```bash
    security find-generic-password -s "Claude Code-credentials" -w \
@@ -85,7 +87,7 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
    access token은 그대로 유효):
    ```bash
    CURRENT=$(security find-generic-password -s "Claude Code-credentials" -w)
-   NEW_EXPIRES=$(($(date +%s%3N) + 60000))
+   NEW_EXPIRES=$(python3 -c 'import time; print(int(time.time()*1000) + 60000)')
    PAYLOAD=$(python3 -c "import json,sys; d=json.loads('''$CURRENT'''); d['claudeAiOauth']['expiresAt']=$NEW_EXPIRES; print(json.dumps(d))")
    security add-generic-password -s "Claude Code-credentials" -a "$USER" -w "$PAYLOAD" -U
    ```

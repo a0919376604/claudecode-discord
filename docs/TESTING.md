@@ -75,6 +75,8 @@ run `claude login`" prompt during normal operation.
 **Prereqs:** macOS, bot logged in via `claude login` at least once,
 bot stopped.
 
+> If anything goes wrong, run `claude login` to overwrite the Keychain entry with a fresh, valid set of credentials.
+
 1. Inspect the current Keychain entry — note the `expiresAt`:
    ```bash
    security find-generic-password -s "Claude Code-credentials" -w \
@@ -86,7 +88,7 @@ bot stopped.
    valid):
    ```bash
    CURRENT=$(security find-generic-password -s "Claude Code-credentials" -w)
-   NEW_EXPIRES=$(($(date +%s%3N) + 60000))
+   NEW_EXPIRES=$(python3 -c 'import time; print(int(time.time()*1000) + 60000)')
    PAYLOAD=$(python3 -c "import json,sys; d=json.loads('''$CURRENT'''); d['claudeAiOauth']['expiresAt']=$NEW_EXPIRES; print(json.dumps(d))")
    security add-generic-password -s "Claude Code-credentials" -a "$USER" -w "$PAYLOAD" -U
    ```
