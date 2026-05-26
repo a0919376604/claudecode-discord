@@ -2,6 +2,14 @@ import { getConfig } from "../utils/config.js";
 import { execFileSync } from "node:child_process";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+interface RefreshResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+}
 
 interface KeychainCreds {
   accessToken: string;
@@ -100,6 +108,71 @@ function needsRefresh(
   return creds.expiresAt - now < thresholdMin * 60_000;
 }
 
+async function callRefreshEndpoint(refreshToken: string): Promise<RefreshResponse | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          client_id: CLIENT_ID,
+        }),
+      });
+    } catch (e) {
+      console.warn(
+        "[credentials-refresher] Network error on refresh:",
+        e instanceof Error ? e.message : e,
+      );
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      return null;
+    }
+
+    if (res.status === 401 || res.status === 400) {
+      console.warn(
+        `[credentials-refresher] Refresh rejected (${res.status}); refresh token likely revoked or expired. Discord will prompt user to re-login on next auth error.`,
+      );
+      return null;
+    }
+    if (res.status >= 500) {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      console.warn(`[credentials-refresher] Refresh endpoint ${res.status} after retry; giving up.`);
+      return null;
+    }
+    if (!res.ok) {
+      console.warn(`[credentials-refresher] Unexpected status ${res.status} from refresh endpoint.`);
+      return null;
+    }
+
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      console.warn("[credentials-refresher] Refresh response was not valid JSON.");
+      return null;
+    }
+    const b = body as Partial<RefreshResponse>;
+    if (typeof b.access_token !== "string" || typeof b.expires_in !== "number") {
+      console.warn("[credentials-refresher] Refresh response missing required fields.");
+      return null;
+    }
+    return {
+      access_token: b.access_token,
+      refresh_token: typeof b.refresh_token === "string" ? b.refresh_token : undefined,
+      expires_in: b.expires_in,
+    };
+  }
+  return null;
+}
+
 async function doRefresh(): Promise<void> {
   const cfg = getConfig();
   if (!cfg.CLAUDE_AUTO_REFRESH) return;
@@ -110,7 +183,8 @@ async function doRefresh(): Promise<void> {
 
   if (!needsRefresh(keychain.creds, cfg.CLAUDE_REFRESH_THRESHOLD_MIN)) return;
 
-  // Placeholder so the "calls fetch when token expires within threshold"
-  // test passes; real refresh body lands in Task 5.
-  await fetch("https://platform.claude.com/v1/oauth/token");
+  const fresh = await callRefreshEndpoint(keychain.creds.refreshToken);
+  if (!fresh) return;
+
+  // Keychain write lands in Task 6.
 }

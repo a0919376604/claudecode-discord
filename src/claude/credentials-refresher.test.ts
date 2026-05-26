@@ -123,4 +123,62 @@ describe("ensureFreshCredentials", () => {
     await ensureFreshCredentials();
     expect(fetchSpy).toHaveBeenCalled();
   });
+
+  it("POSTs the correct body to the refresh endpoint", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    mockKeychainCreds({
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      refreshToken: "sk-ant-ort01-the-current-one",
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: "new-access",
+        refresh_token: "new-refresh",
+        expires_in: 28800,
+      })),
+    );
+    await ensureFreshCredentials();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://platform.claude.com/v1/oauth/token",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          grant_type: "refresh_token",
+          refresh_token: "sk-ant-ort01-the-current-one",
+          client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        }),
+      }),
+    );
+  });
+
+  it("does not write Keychain on 401 (invalid_grant)", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_grant" }), { status: 401 }),
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await ensureFreshCredentials();
+    // Only the READ exec call should have happened — no write.
+    const writeCalls = vi.mocked(execFileSync).mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
+    );
+    expect(writeCalls).toHaveLength(0);
+    warnSpy.mockRestore();
+  });
+
+  it("retries once on 5xx, then gives up", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValueOnce(new Response("", { status: 503 }));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await ensureFreshCredentials();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
+  });
 });
