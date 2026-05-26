@@ -129,12 +129,14 @@ export class PluginRegistry {
           return a.originalIndex - b.originalIndex;
         });
         for (const p of sorted) {
-          builder.addStringOption((opt) =>
-            opt
+          builder.addStringOption((opt) => {
+            const o = opt
               .setName(p.name)
               .setDescription(p.description)
-              .setRequired(p.required),
-          );
+              .setRequired(p.required);
+            if (p.type === "path") o.setAutocomplete(true);
+            return o;
+          });
         }
       }
 
