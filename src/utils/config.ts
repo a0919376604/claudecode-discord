@@ -23,6 +23,18 @@ const envSchema = z.object({
   // prompt. Set to 0 to disable (no ceiling). Coerced via Number() at the
   // call site to avoid forcing every test fixture to pass a string.
   MAX_SESSION_DURATION_MIN: z.coerce.number().int().nonnegative().default(60),
+  // Refresh the Claude Code OAuth access token before it expires so
+  // the user never has to re-run `claude login` while the bot is
+  // running. macOS only for v1 — the refresher silently no-ops on
+  // other platforms. Set to "false" to disable entirely.
+  CLAUDE_AUTO_REFRESH: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  // Refresh the access token when it expires in less than this many
+  // minutes. 30 is conservative enough to absorb retries on slow
+  // networks while still avoiding gratuitous refreshes.
+  CLAUDE_REFRESH_THRESHOLD_MIN: z.coerce.number().int().positive().default(30),
 });
 
 export type Config = z.infer<typeof envSchema>;
