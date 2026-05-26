@@ -65,3 +65,43 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
 2. 소스 import 시 `.js` 확장자 사용 (ESM 컨벤션)
 3. 외부 의존성은 `vi.mock()`으로 모킹 — 테스트 대상 모듈 자체는 모킹하지 않기
 4. `npm test`로 확인
+
+## OAuth 토큰 자동 갱신 (macOS 전용)
+
+봇이 만료 직전에 Claude Code OAuth access token을 자동으로 갱신하여,
+정상 운영 중에는 사용자가 `claude login`을 다시 실행할 필요가 없는지
+확인합니다.
+
+**전제 조건:** macOS, 최소 한 번은 `claude login`으로 로그인된 상태,
+봇은 중지된 상태.
+
+1. 현재 Keychain 항목의 `expiresAt`을 확인합니다:
+   ```bash
+   security find-generic-password -s "Claude Code-credentials" -w \
+     | python3 -c 'import sys,json; d=json.load(sys.stdin)["claudeAiOauth"]; print("expiresAt:", d["expiresAt"], "now:", __import__("time").time()*1000)'
+   ```
+
+2. 토큰이 1분 뒤 "만료"되는 것처럼 타임스탬프만 위변조합니다 (실제
+   access token은 그대로 유효):
+   ```bash
+   CURRENT=$(security find-generic-password -s "Claude Code-credentials" -w)
+   NEW_EXPIRES=$(($(date +%s%3N) + 60000))
+   PAYLOAD=$(python3 -c "import json,sys; d=json.loads('''$CURRENT'''); d['claudeAiOauth']['expiresAt']=$NEW_EXPIRES; print(json.dumps(d))")
+   security add-generic-password -s "Claude Code-credentials" -a "$USER" -w "$PAYLOAD" -U
+   ```
+
+3. `npm run dev`로 봇을 실행합니다. 몇 초 안에 로그에 다음 줄이 나와야
+   합니다:
+   ```
+   [credentials-refresher] Refreshed access token (valid ~8h).
+   ```
+
+4. Keychain 항목을 다시 확인합니다. `expiresAt`이 약 8시간 뒤로 갱신되어
+   있고, `accessToken` 값이 1단계와 달라야 합니다.
+
+**비활성화 테스트:**
+
+봇을 중지하고 `.env`에 `CLAUDE_AUTO_REFRESH=false`를 추가한 뒤 재시작합니다.
+2단계와 같이 `expiresAt`을 위변조해도 갱신 로그가 나오지 않으며, Discord
+메시지를 보내면 봇의 기존 인증 오류 감지 로직이 "claude login 다시 실행해
+주세요" 안내를 띄워야 합니다.

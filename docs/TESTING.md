@@ -65,3 +65,46 @@ npx tsc --noEmit      # Type check only (no build output)
 2. Import from the source using `.js` extension (ESM convention)
 3. Mock external dependencies (`vi.mock()`) — avoid mocking the module under test
 4. Run `npm test` to verify
+
+## OAuth token auto-refresh (macOS only)
+
+Verifies that the bot proactively refreshes the Claude Code OAuth
+access token before it expires, so the user never sees the "please
+run `claude login`" prompt during normal operation.
+
+**Prereqs:** macOS, bot logged in via `claude login` at least once,
+bot stopped.
+
+1. Inspect the current Keychain entry — note the `expiresAt`:
+   ```bash
+   security find-generic-password -s "Claude Code-credentials" -w \
+     | python3 -c 'import sys,json; d=json.load(sys.stdin)["claudeAiOauth"]; print("expiresAt:", d["expiresAt"], "now:", __import__("time").time()*1000)'
+   ```
+
+2. Tamper the entry so the token "expires" 1 minute from now (this
+   only changes the timestamp; the actual access token is still
+   valid):
+   ```bash
+   CURRENT=$(security find-generic-password -s "Claude Code-credentials" -w)
+   NEW_EXPIRES=$(($(date +%s%3N) + 60000))
+   PAYLOAD=$(python3 -c "import json,sys; d=json.loads('''$CURRENT'''); d['claudeAiOauth']['expiresAt']=$NEW_EXPIRES; print(json.dumps(d))")
+   security add-generic-password -s "Claude Code-credentials" -a "$USER" -w "$PAYLOAD" -U
+   ```
+
+3. Start the bot: `npm run dev`. Within a few seconds the log should
+   contain:
+   ```
+   [credentials-refresher] Refreshed access token (valid ~8h).
+   ```
+
+4. Re-inspect the Keychain entry. `expiresAt` should now be ~8 hours
+   in the future, and the `accessToken` value should differ from
+   what it was in step 1.
+
+**Negative test — disable the feature:**
+
+Stop the bot, set `CLAUDE_AUTO_REFRESH=false` in `.env`, restart.
+After tampering `expiresAt` again as in step 2, the log should NOT
+contain the refresh line, and sending a Discord message should
+eventually surface the existing "please run `claude login`" prompt
+via the bot's auth-error detection.
