@@ -10,6 +10,12 @@ vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => mockConfig),
 }));
 
+vi.mock("node:child_process", () => ({
+  execFileSync: vi.fn(),
+}));
+
+import { execFileSync } from "node:child_process";
+
 import { ensureFreshCredentials } from "./credentials-refresher.js";
 
 describe("ensureFreshCredentials", () => {
@@ -18,6 +24,7 @@ describe("ensureFreshCredentials", () => {
   beforeEach(() => {
     mockConfig.CLAUDE_AUTO_REFRESH = true;
     mockConfig.CLAUDE_REFRESH_THRESHOLD_MIN = 30;
+    vi.mocked(execFileSync).mockReset();
   });
 
   afterEach(() => {
@@ -41,5 +48,43 @@ describe("ensureFreshCredentials", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
     await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("calls `security find-generic-password` to read the Keychain entry", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error("The specified item could not be found in the keychain.");
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
+    await ensureFreshCredentials();
+    expect(execFileSync).toHaveBeenCalledWith(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      expect.any(Object),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("returns silently when Keychain entry is missing", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error("The specified item could not be found in the keychain.");
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
+    await ensureFreshCredentials();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("returns silently when Keychain JSON is malformed", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.mocked(execFileSync).mockReturnValue("not json at all\n" as never);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
+    await ensureFreshCredentials();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

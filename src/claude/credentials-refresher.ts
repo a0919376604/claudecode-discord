@@ -1,4 +1,73 @@
 import { getConfig } from "../utils/config.js";
+import { execFileSync } from "node:child_process";
+
+const KEYCHAIN_SERVICE = "Claude Code-credentials";
+
+interface KeychainCreds {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // ms epoch
+  scopes: string[];
+  subscriptionType: string;
+  rateLimitTier?: string;
+}
+
+interface KeychainRecord {
+  creds: KeychainCreds;
+  account: string;
+}
+
+function readKeychain(): KeychainRecord | null {
+  let raw: string;
+  try {
+    raw = execFileSync(
+      "security",
+      ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+  } catch (e) {
+    console.warn(
+      "[credentials-refresher] Keychain entry not found or unreadable:",
+      e instanceof Error ? e.message.slice(0, 200) : e,
+    );
+    return null;
+  }
+
+  let parsed: { claudeAiOauth?: Partial<KeychainCreds> };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn("[credentials-refresher] Keychain JSON malformed; ignoring.");
+    return null;
+  }
+
+  const c = parsed.claudeAiOauth;
+  if (
+    !c ||
+    typeof c.accessToken !== "string" ||
+    typeof c.refreshToken !== "string" ||
+    typeof c.expiresAt !== "number" ||
+    !Array.isArray(c.scopes) ||
+    typeof c.subscriptionType !== "string"
+  ) {
+    console.warn("[credentials-refresher] Keychain payload missing required fields.");
+    return null;
+  }
+
+  // Account name is the macOS username (matches what the official CLI uses)
+  const account = process.env.USER ?? "";
+  return {
+    creds: {
+      accessToken: c.accessToken,
+      refreshToken: c.refreshToken,
+      expiresAt: c.expiresAt,
+      scopes: c.scopes,
+      subscriptionType: c.subscriptionType,
+      rateLimitTier: c.rateLimitTier,
+    },
+    account,
+  };
+}
 
 /**
  * Ensure Keychain holds a non-expired Claude Code OAuth access token
@@ -26,5 +95,9 @@ export async function ensureFreshCredentials(): Promise<void> {
 async function doRefresh(): Promise<void> {
   if (!getConfig().CLAUDE_AUTO_REFRESH) return;
   if (process.platform !== "darwin") return;
+
+  const keychain = readKeychain();
+  if (!keychain) return;
+
   // Subsequent tasks fill in the rest.
 }
