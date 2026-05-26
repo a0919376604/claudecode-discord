@@ -27,6 +27,7 @@ import {
   decideProgressAction,
   buildProgressContent,
 } from "./progress-decision.js";
+import { ensureFreshCredentials } from "./credentials-refresher.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -81,6 +82,12 @@ class SessionManager {
     prompt: string,
   ): Promise<void> {
     const channelId = channel.id;
+
+    // Best-effort: keep the macOS Keychain access token fresh before
+    // we spawn a `claude` subprocess. No-op on non-darwin and when
+    // the token is still well within expiry. Never throws.
+    await ensureFreshCredentials();
+
     const project = getProject(channelId);
     if (!project) return;
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
+import { ensureFreshCredentials } from "./claude/credentials-refresher.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
 
@@ -60,6 +61,11 @@ async function main() {
   // Load and validate config
   loadConfig();
   console.log("Config loaded");
+
+  // Kick off a background credential refresh so the first user
+  // request after bot startup doesn't have to wait for a refresh
+  // round trip. Fire-and-forget — failures log internally.
+  void ensureFreshCredentials();
 
   // Initialize database
   initDatabase();
