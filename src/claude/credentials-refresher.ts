@@ -2,6 +2,12 @@ import { getConfig } from "../utils/config.js";
 import { execFileSync } from "node:child_process";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
+// OAuth refresh endpoint and client identifier used by the official
+// Claude Code CLI. CLIENT_ID is a *public* OAuth client identifier
+// (not a secret) — it identifies the Claude Code client to Anthropic's
+// authorization server. Extracted from the bundled
+// @anthropic-ai/claude-agent-sdk source. If Anthropic ever rotates
+// either value, this module must be updated to match.
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
@@ -77,6 +83,8 @@ function readKeychain(): KeychainRecord | null {
   };
 }
 
+let inFlight: Promise<void> | null = null;
+
 /**
  * Ensure Keychain holds a non-expired Claude Code OAuth access token
  * before the caller spawns a `claude` subprocess. Idempotent: cheap
@@ -89,8 +97,6 @@ function readKeychain(): KeychainRecord | null {
  *
  * macOS-only for v1; silently no-ops on other platforms.
  */
-let inFlight: Promise<void> | null = null;
-
 export async function ensureFreshCredentials(): Promise<void> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
@@ -128,6 +134,7 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
           refresh_token: refreshToken,
           client_id: CLIENT_ID,
         }),
+        signal: AbortSignal.timeout(5000),
       });
     } catch (e) {
       console.warn(

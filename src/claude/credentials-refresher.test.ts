@@ -20,6 +20,7 @@ import { ensureFreshCredentials } from "./credentials-refresher.js";
 
 describe("ensureFreshCredentials", () => {
   const originalPlatform = process.platform;
+  const originalUser = process.env.USER;
 
   beforeEach(() => {
     mockConfig.CLAUDE_AUTO_REFRESH = true;
@@ -29,6 +30,11 @@ describe("ensureFreshCredentials", () => {
 
   afterEach(() => {
     Object.defineProperty(process, "platform", { value: originalPlatform });
+    if (originalUser === undefined) {
+      delete process.env.USER;
+    } else {
+      process.env.USER = originalUser;
+    }
     vi.restoreAllMocks();
   });
 
