@@ -10,6 +10,7 @@ import { registerProject, getProject } from "../../db/database.js";
 import { validateProjectPath } from "../../security/guard.js";
 import { getConfig } from "../../utils/config.js";
 import { L } from "../../utils/i18n.js";
+import { listProjectSubdirs } from "../../utils/project-dirs.js";
 
 export const data = new SlashCommandBuilder()
   .setName("register")
@@ -87,54 +88,10 @@ export async function autocomplete(
   interaction: AutocompleteInteraction,
 ): Promise<void> {
   const focused = interaction.options.getFocused();
-  const config = getConfig();
-  const baseDir = config.BASE_PROJECT_DIR;
-
-  try {
-    // Split into parent path and current typed prefix
-    const lastSlash = focused.lastIndexOf("/");
-    const parentPart = lastSlash >= 0 ? focused.slice(0, lastSlash) : "";
-    const currentPrefix = lastSlash >= 0 ? focused.slice(lastSlash + 1) : focused;
-
-    // Directory to list: baseDir/parentPart (or baseDir if no slash yet)
-    const listDir = parentPart ? path.join(baseDir, parentPart) : baseDir;
-
-    // Security: must stay within baseDir
-    const resolvedList = path.resolve(listDir);
-    const resolvedBase = path.resolve(baseDir);
-    if (!resolvedList.startsWith(resolvedBase)) {
-      await interaction.respond([]);
-      return;
-    }
-
-    const entries = fs.readdirSync(listDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-      .map((e) => e.name)
-      .filter((name) => name.toLowerCase().includes(currentPrefix.toLowerCase()))
-      .slice(0, 24);
-
-    const choices: { name: string; value: string }[] = [];
-
-    // Add base directory itself as first option (only at root level)
-    if (!parentPart && (!focused || ".".includes(focused.toLowerCase()) || baseDir.toLowerCase().includes(focused.toLowerCase()))) {
-      choices.push({ name: `. (${baseDir})`, value: baseDir });
-    }
-
-    choices.push(
-      ...dirs.map((name) => {
-        const value = parentPart ? `${parentPart}/${name}` : name;
-        return { name: value, value };
-      }),
-    );
-
-    // Offer to create if no exact match
-    if (focused && !dirs.some((d) => d.toLowerCase() === currentPrefix.toLowerCase())) {
-      choices.push({ name: `📁 Create new: ${focused}`, value: focused });
-    }
-
-    await interaction.respond(choices.slice(0, 25));
-  } catch {
-    await interaction.respond([]);
-  }
+  const choices = listProjectSubdirs({
+    focused,
+    includeBaseDirSelf: true,
+    includeCreateNew: true,
+  });
+  await interaction.respond(choices.slice(0, 25));
 }
