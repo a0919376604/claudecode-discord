@@ -31,6 +31,10 @@ vi.mock("../utils/project-dirs.js", () => ({
   },
 }));
 
+vi.mock("../utils/config.js", () => ({
+  getConfig: () => ({ BASE_PROJECT_DIR: "/base" }),
+}));
+
 import { handlePluginCommand, handlePluginAutocomplete } from "./bridge.js";
 import type { RegisteredPluginCommand } from "./types.js";
 import { PluginRegistry } from "./registry.js";
@@ -404,5 +408,88 @@ describe("handlePluginAutocomplete", () => {
     await handlePluginAutocomplete(interaction as any, registry);
     const respondArg = interaction.respond.mock.calls[0][0];
     expect(respondArg).toHaveLength(25);
+  });
+});
+
+describe("buildPrompt — path-typed arg resolution", () => {
+  beforeEach(() => {
+    mockResolveProjectPath.mockReset();
+    mockGetProject.mockReturnValue({ project_path: "/any", channel_id: "chan-1" });
+    mockIsActive.mockReturnValue(false);
+    mockSendMessage.mockReset();
+  });
+
+  it("resolves a relative path-typed value to absolute and dispatches", async () => {
+    mockResolveProjectPath.mockImplementation((v: string) =>
+      v.startsWith("/") ? v : `/base/${v}`,
+    );
+    const registry = makeRegistryWith(reg("architect", [
+      { name: "repo", description: "repo", required: true, originalIndex: 0, type: "path" },
+    ]));
+    const interaction = makeInteraction({
+      channelId: "chan-1",
+      options: { repo: "monorepo/foo" },
+    });
+    // commandName needs to match the registered command
+    interaction.commandName = "architect";
+    await handlePluginCommand(interaction as any, registry.lookup("architect")!);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/claude-obsidian:architect /base/monorepo/foo",
+    );
+  });
+
+  it("passes absolute path-typed values through without joining base", async () => {
+    mockResolveProjectPath.mockImplementation((v: string) =>
+      v.startsWith("/") ? v : `/base/${v}`,
+    );
+    const registry = makeRegistryWith(reg("architect", [
+      { name: "repo", description: "repo", required: true, originalIndex: 0, type: "path" },
+    ]));
+    const interaction = makeInteraction({
+      channelId: "chan-1",
+      options: { repo: "/elsewhere/repo" },
+    });
+    interaction.commandName = "architect";
+    await handlePluginCommand(interaction as any, registry.lookup("architect")!);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/claude-obsidian:architect /elsewhere/repo",
+    );
+  });
+
+  it("rejects '..' in any path-typed value with ephemeral reply, no dispatch", async () => {
+    const registry = makeRegistryWith(reg("architect", [
+      { name: "repo", description: "repo", required: true, originalIndex: 0, type: "path" },
+    ]));
+    const interaction = makeInteraction({
+      channelId: "chan-1",
+      options: { repo: "../etc" },
+    });
+    interaction.commandName = "architect";
+    await handlePluginCommand(interaction as any, registry.lookup("architect")!);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Invalid path"),
+      }),
+    );
+  });
+
+  it("does not resolve text-typed values", async () => {
+    const registry = makeRegistryWith(reg("research", [
+      { name: "topic", description: "topic", required: true, originalIndex: 0, type: "text" },
+    ]));
+    const interaction = makeInteraction({
+      channelId: "chan-1",
+      options: { topic: "AI safety" },
+    });
+    interaction.commandName = "research";
+    await handlePluginCommand(interaction as any, registry.lookup("research")!);
+    expect(mockResolveProjectPath).not.toHaveBeenCalled();
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "/claude-obsidian:research AI safety",
+    );
   });
 });
