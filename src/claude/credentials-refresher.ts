@@ -173,6 +173,30 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
   return null;
 }
 
+function writeKeychain(creds: KeychainCreds, account: string): boolean {
+  const payload = JSON.stringify({ claudeAiOauth: creds });
+  try {
+    execFileSync(
+      "security",
+      [
+        "add-generic-password",
+        "-s", KEYCHAIN_SERVICE,
+        "-a", account,
+        "-w", payload,
+        "-U",
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    return true;
+  } catch (e) {
+    console.warn(
+      "[credentials-refresher] Failed to write Keychain:",
+      e instanceof Error ? e.message.slice(0, 200) : e,
+    );
+    return false;
+  }
+}
+
 async function doRefresh(): Promise<void> {
   const cfg = getConfig();
   if (!cfg.CLAUDE_AUTO_REFRESH) return;
@@ -186,5 +210,15 @@ async function doRefresh(): Promise<void> {
   const fresh = await callRefreshEndpoint(keychain.creds.refreshToken);
   if (!fresh) return;
 
-  // Keychain write lands in Task 6.
+  const merged: KeychainCreds = {
+    ...keychain.creds,
+    accessToken: fresh.access_token,
+    refreshToken: fresh.refresh_token ?? keychain.creds.refreshToken,
+    expiresAt: Date.now() + fresh.expires_in * 1000,
+  };
+
+  if (writeKeychain(merged, keychain.account)) {
+    const hoursLeft = Math.round((merged.expiresAt - Date.now()) / 3_600_000);
+    console.log(`[credentials-refresher] Refreshed access token (valid ~${hoursLeft}h).`);
+  }
 }

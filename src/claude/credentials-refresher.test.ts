@@ -181,4 +181,65 @@ describe("ensureFreshCredentials", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
   });
+
+  it("writes refreshed creds back to Keychain preserving subscriptionType and scopes", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.USER = "testuser";
+    mockKeychainCreds({ expiresAt: Date.now() + 5 * 60 * 1000 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: "sk-ant-oat01-new",
+        refresh_token: "sk-ant-ort01-new",
+        expires_in: 28800,
+      })),
+    );
+
+    await ensureFreshCredentials();
+
+    const writeCall = vi.mocked(execFileSync).mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
+    );
+    expect(writeCall).toBeDefined();
+    const args = writeCall![1] as string[];
+    const wIdx = args.indexOf("-w");
+    const payload = JSON.parse(args[wIdx + 1]);
+    expect(payload.claudeAiOauth.accessToken).toBe("sk-ant-oat01-new");
+    expect(payload.claudeAiOauth.refreshToken).toBe("sk-ant-ort01-new");
+    expect(payload.claudeAiOauth.subscriptionType).toBe("team");
+    expect(payload.claudeAiOauth.scopes).toEqual(["user:inference"]);
+    expect(payload.claudeAiOauth.rateLimitTier).toBe("default_claude_max_5x");
+    // expiresAt should be ~now + 28800 * 1000
+    const expectedExpiry = Date.now() + 28800 * 1000;
+    expect(Math.abs(payload.claudeAiOauth.expiresAt - expectedExpiry)).toBeLessThan(5000);
+    // -U flag for update-if-exists
+    expect(args).toContain("-U");
+    // -a flag with our USER env
+    const aIdx = args.indexOf("-a");
+    expect(args[aIdx + 1]).toBe("testuser");
+  });
+
+  it("preserves existing refresh token if response omits it", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.USER = "testuser";
+    mockKeychainCreds({
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      refreshToken: "sk-ant-ort01-original",
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        access_token: "sk-ant-oat01-new",
+        // no refresh_token
+        expires_in: 28800,
+      })),
+    );
+
+    await ensureFreshCredentials();
+
+    const writeCall = vi.mocked(execFileSync).mock.calls.find(
+      (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
+    );
+    const args = writeCall![1] as string[];
+    const payload = JSON.parse(args[args.indexOf("-w") + 1]);
+    expect(payload.claudeAiOauth.refreshToken).toBe("sk-ant-ort01-original");
+  });
 });
