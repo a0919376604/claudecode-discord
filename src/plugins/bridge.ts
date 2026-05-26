@@ -1,8 +1,16 @@
-import type { ChatInputCommandInteraction, TextChannel } from "discord.js";
+import path from "node:path";
+import type { AutocompleteInteraction, ChatInputCommandInteraction, TextChannel } from "discord.js";
 import { getProject } from "../db/database.js";
 import { sessionManager } from "../claude/session-manager.js";
 import { L } from "../utils/i18n.js";
 import type { RegisteredPluginCommand } from "./types.js";
+import { getConfig } from "../utils/config.js";
+import {
+  listProjectSubdirs,
+  resolveProjectPath,
+  PathValidationError,
+} from "../utils/project-dirs.js";
+import { PluginRegistry } from "./registry.js";
 
 /**
  * Discord slash command handler for any plugin-derived command.
@@ -45,7 +53,21 @@ export async function handlePluginCommand(
     return;
   }
 
-  const prompt = buildPrompt(interaction, registered);
+  let prompt: string;
+  try {
+    prompt = buildPrompt(interaction, registered);
+  } catch (err) {
+    if (err instanceof PathValidationError) {
+      await interaction.editReply({
+        content: L(
+          `Invalid path: ${err.message}`,
+          `잘못된 경로: ${err.message}`,
+        ),
+      });
+      return;
+    }
+    throw err;
+  }
 
   await interaction.editReply({
     content: L(`Running \`${prompt}\``, `실행 중: \`${prompt}\``),
@@ -53,6 +75,42 @@ export async function handlePluginCommand(
 
   const channel = interaction.channel as TextChannel;
   await sessionManager.sendMessage(channel, prompt);
+}
+
+/**
+ * Discord slash-command autocomplete handler for plugin-derived commands.
+ *
+ * client.ts dispatches here when the focused interaction targets a command
+ * that lives in `pluginRegistry` (i.e. not a bot-owned command). The handler
+ * inspects the focused param's `type`; only path-typed params get the
+ * BASE_PROJECT_DIR walk. Everything else returns [].
+ */
+export async function handlePluginAutocomplete(
+  interaction: AutocompleteInteraction,
+  registry: PluginRegistry,
+): Promise<void> {
+  const registered = registry.lookup(interaction.commandName);
+  if (!registered) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  const param = registered.parsedParams.find((p) => p.name === focused.name);
+  if (!param || param.type !== "path") {
+    await interaction.respond([]);
+    return;
+  }
+
+  const project = getProject(interaction.channelId);
+  const choices = listProjectSubdirs({
+    focused: focused.value,
+    includeBaseDirSelf: false,
+    includeCreateNew: false,
+    starredAbsolutePath: project?.project_path,
+  });
+
+  await interaction.respond(choices.slice(0, 25));
 }
 
 function buildPrompt(
@@ -80,12 +138,43 @@ function buildPrompt(
   );
   const values: string[] = [];
   for (const p of sorted) {
-    const v = (interaction.options.getString(p.name) ?? "").trim();
-    values.push(v);
+    const raw = (interaction.options.getString(p.name) ?? "").trim();
+    if (p.type === "path") {
+      values.push(resolvePathArg(raw));
+    } else {
+      values.push(raw);
+    }
   }
   while (values.length > 0 && values[values.length - 1] === "") {
     values.pop();
   }
   const joined = values.join(" ");
   return joined ? `/${slashName} ${joined}` : `/${slashName}`;
+}
+
+/**
+ * Resolve a single path-typed argument value with safety checks.
+ *
+ * Rules:
+ *   - empty → "" (caller's Discord schema enforces required)
+ *   - contains ".." → PathValidationError (no further processing)
+ *   - absolute → returned as-is (⭐ pin, power-user paste; matches /register
+ *     tolerance for channels registered outside BASE_PROJECT_DIR)
+ *   - relative → joined with BASE_PROJECT_DIR; result MUST stay inside
+ *     BASE_PROJECT_DIR or PathValidationError
+ */
+function resolvePathArg(raw: string): string {
+  if (!raw) return "";
+  if (raw.includes("..")) {
+    throw new PathValidationError("path must not contain '..'");
+  }
+  const resolved = resolveProjectPath(raw);
+  if (!path.isAbsolute(raw)) {
+    const baseDir = path.resolve(getConfig().BASE_PROJECT_DIR);
+    const candidate = path.resolve(resolved);
+    if (candidate !== baseDir && !candidate.startsWith(baseDir + path.sep)) {
+      throw new PathValidationError("path escapes base project directory");
+    }
+  }
+  return resolved;
 }

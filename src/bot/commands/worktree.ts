@@ -9,6 +9,7 @@ import path from "node:path";
 import { registerWorktreeProject, getProject } from "../../db/database.js";
 import { validateProjectPath } from "../../security/guard.js";
 import { getConfig } from "../../utils/config.js";
+import { listProjectSubdirs } from "../../utils/project-dirs.js";
 import { L } from "../../utils/i18n.js";
 import {
   isGitRepo,
@@ -149,37 +150,10 @@ export async function autocomplete(
   interaction: AutocompleteInteraction,
 ): Promise<void> {
   const focused = interaction.options.getFocused();
-  const config = getConfig();
-  const baseDir = config.BASE_PROJECT_DIR;
-
-  try {
-    const lastSlash = focused.lastIndexOf("/");
-    const parentPart = lastSlash >= 0 ? focused.slice(0, lastSlash) : "";
-    const currentPrefix = lastSlash >= 0 ? focused.slice(lastSlash + 1) : focused;
-
-    const listDir = parentPart ? path.join(baseDir, parentPart) : baseDir;
-
-    const resolvedList = path.resolve(listDir);
-    const resolvedBase = path.resolve(baseDir);
-    if (!resolvedList.startsWith(resolvedBase)) {
-      await interaction.respond([]);
-      return;
-    }
-
-    const entries = fs.readdirSync(listDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-      .map((e) => e.name)
-      .filter((name) => name.toLowerCase().includes(currentPrefix.toLowerCase()))
-      .slice(0, 25);
-
-    const choices = dirs.map((name) => {
-      const value = parentPart ? `${parentPart}/${name}` : name;
-      return { name: value, value };
-    });
-
-    await interaction.respond(choices.slice(0, 25));
-  } catch {
-    await interaction.respond([]);
-  }
+  const choices = listProjectSubdirs({
+    focused,
+    includeBaseDirSelf: false,
+    includeCreateNew: false,
+  });
+  await interaction.respond(choices.slice(0, 25));
 }

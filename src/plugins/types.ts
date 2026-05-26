@@ -16,6 +16,16 @@ export interface ParsedParam {
   description: string; // <= 100 chars, defaults to name if hint had none
   required: boolean;
   originalIndex: number; // 0-based position in the source hint
+  /**
+   * "path" → Discord should attach autocomplete listing BASE_PROJECT_DIR
+   * subdirs; bridge resolves the value to an absolute path before dispatch.
+   * "text" → plain string option, no autocomplete.
+   *
+   * Set by the parser via name convention (PATH_PARAM_NAMES) or an explicit
+   * `<name:path>` / `<name:text>` annotation in the argument-hint. Falls back
+   * to "text" when neither matches.
+   */
+  type: "path" | "text";
 }
 
 /**

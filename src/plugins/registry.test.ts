@@ -99,7 +99,17 @@ function param(
   originalIndex: number,
   description = name,
 ): ParsedParam {
-  return { name, description, required, originalIndex };
+  return { name, description, required, originalIndex, type: "text" };
+}
+
+function paramWithType(
+  name: string,
+  required: boolean,
+  originalIndex: number,
+  type: "path" | "text",
+  description = name,
+): ParsedParam {
+  return { name, description, required, originalIndex, type };
 }
 
 function cmdWithParams(
@@ -184,6 +194,53 @@ describe("PluginRegistry.toDiscordCommands", () => {
     ]);
     const json = registry.toDiscordCommands()[0]!.toJSON();
     expect(json.description).toBe("A described command.");
+  });
+
+  it("sets autocomplete=true on options whose ParsedParam.type === 'path'", () => {
+    registry.register([
+      cmdWithParams("p1@m1", "architect", [
+        paramWithType("repo-path", true, 0, "path"),
+      ]),
+    ]);
+    const json = registry.toDiscordCommands()[0]!.toJSON();
+    expect(json.options).toHaveLength(1);
+    expect(json.options![0]).toMatchObject({
+      name: "repo-path",
+      required: true,
+      autocomplete: true,
+    });
+  });
+
+  it("does NOT set autocomplete on options whose type === 'text'", () => {
+    registry.register([
+      cmdWithParams("p1@m1", "research", [
+        paramWithType("topic", true, 0, "text"),
+      ]),
+    ]);
+    const json = registry.toDiscordCommands()[0]!.toJSON();
+    // discord.js omits 'autocomplete' from JSON when not set, so the
+    // property is absent (or false). Assert neither truthy.
+    expect((json.options![0] as any).autocomplete).not.toBe(true);
+  });
+
+  it("does NOT set autocomplete on the fallback `args` option", () => {
+    registry.register([cmd("p1@m1", "noargs")]);
+    const json = registry.toDiscordCommands()[0]!.toJSON();
+    expect((json.options![0] as any).autocomplete).not.toBe(true);
+  });
+
+  it("mixes autocomplete and plain options across multiple params", () => {
+    registry.register([
+      cmdWithParams("p1@m1", "scan", [
+        paramWithType("repo", true, 0, "path"),
+        paramWithType("query", true, 1, "text"),
+      ]),
+    ]);
+    const json = registry.toDiscordCommands()[0]!.toJSON();
+    const byName: Record<string, any> = {};
+    for (const o of json.options!) byName[o.name] = o;
+    expect(byName.repo.autocomplete).toBe(true);
+    expect(byName.query.autocomplete).not.toBe(true);
   });
 });
 

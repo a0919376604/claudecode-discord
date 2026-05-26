@@ -31,7 +31,7 @@ import * as refreshBoardCmd from "./commands/refresh-board.js";
 
 import { scanAllCommandSources } from "../plugins/discovery.js";
 import { PluginRegistry } from "../plugins/registry.js";
-import { handlePluginCommand } from "../plugins/bridge.js";
+import { handlePluginCommand, handlePluginAutocomplete } from "../plugins/bridge.js";
 import { getAllProjects } from "../db/database.js";
 
 const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd, refreshBoardCmd];
@@ -124,6 +124,12 @@ export async function startBot(): Promise<Client> {
         const command = commandMap.get(interaction.commandName);
         if (command && "autocomplete" in command) {
           await (command as any).autocomplete(interaction);
+          return;
+        }
+        // Fall through: a plugin-derived command may have registered
+        // autocomplete via setAutocomplete(true) on a path-typed param.
+        if (pluginRegistry.lookup(interaction.commandName)) {
+          await handlePluginAutocomplete(interaction, pluginRegistry);
         }
         return;
       }
