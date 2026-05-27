@@ -11,6 +11,18 @@ const KEYCHAIN_SERVICE = "Claude Code-credentials";
 // either value, this module must be updated to match.
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+// Anthropic gates the OAuth refresh endpoint behind this beta header.
+// Without it the endpoint returns HTTP 400 even with a valid
+// refresh_token, which we then mis-diagnose as a revoked token and
+// prompt the user to re-login. The official SDK sends this header on
+// every refresh (see `anthropic-beta` in
+// `@anthropic-ai/claude-agent-sdk/sdk.mjs`). Keep this value in sync
+// with the SDK if Anthropic rolls the beta version.
+const ANTHROPIC_BETA = "oauth-2025-04-20";
+// User-Agent: identification only. Anthropic doesn't gate on this,
+// but the official SDK always sends one. We send a stable string so
+// our refresh requests are recognizable in Anthropic-side logs.
+const USER_AGENT = "claudecode-discord/1.3.0";
 
 interface RefreshResponse {
   access_token: string;
@@ -142,7 +154,11 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
     try {
       res = await fetch(TOKEN_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "anthropic-beta": ANTHROPIC_BETA,
+          "User-Agent": USER_AGENT,
+        },
         body: JSON.stringify({
           grant_type: "refresh_token",
           refresh_token: refreshToken,

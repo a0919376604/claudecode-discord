@@ -153,6 +153,14 @@ describe("ensureFreshCredentials", () => {
         method: "POST",
         headers: expect.objectContaining({
           "Content-Type": "application/json",
+          // anthropic-beta gates OAuth refresh — without it the endpoint
+          // returns HTTP 400 even on a valid refresh_token. Discovered
+          // by diffing our refresher against the Anthropic SDK's own
+          // refresh fetch in sdk.mjs.
+          "anthropic-beta": "oauth-2025-04-20",
+          // User-Agent: identification only; the official SDK always
+          // sends one so we match its pattern.
+          "User-Agent": expect.stringContaining("claudecode-discord"),
         }),
         body: JSON.stringify({
           grant_type: "refresh_token",
