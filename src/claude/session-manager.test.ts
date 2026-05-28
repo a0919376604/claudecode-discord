@@ -21,7 +21,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
 }));
 
-import { sessionManager } from "./session-manager.js";
+import { sessionManager, flushStreamBuffer } from "./session-manager.js";
 
 // Helper to create a mock TextChannel
 function mockChannel(id: string) {
@@ -141,5 +141,80 @@ describe("SessionManager", () => {
     it("returns false for inactive session", async () => {
       expect(await sessionManager.stopSession("no-session")).toBe(false);
     });
+  });
+});
+
+// ─── flushStreamBuffer ───
+
+describe("flushStreamBuffer", () => {
+  // Build a minimal Message-like mock. The helper only touches .edit.
+  function mockMessage() {
+    return {
+      edit: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  // Build a minimal TextChannel-like mock. The helper only touches .send.
+  // Each .send returns a fresh mock Message so the helper can chain.
+  function mockChannel() {
+    const sent: any[] = [];
+    const send = vi.fn().mockImplementation((_content: any) => {
+      const msg = { edit: vi.fn().mockResolvedValue(undefined) };
+      sent.push(msg);
+      return Promise.resolve(msg);
+    });
+    return { channel: { send } as any, sent, send };
+  }
+
+  it("is a no-op for empty buffer", async () => {
+    const { channel, send } = mockChannel();
+    const current = mockMessage();
+    const result = await flushStreamBuffer(channel, current, "");
+    expect(current.edit).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(result.tail).toBe(current);
+    expect(result.remainingBuffer).toBe("");
+  });
+
+  it("edits currentMessage when buffer fits in one chunk", async () => {
+    const { channel, send } = mockChannel();
+    const current = mockMessage();
+    const result = await flushStreamBuffer(channel, current, "hello world");
+    expect(current.edit).toHaveBeenCalledWith({
+      content: "hello world",
+      components: [],
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(result.tail).toBe(current);
+    // Single-chunk: buffer is preserved (existing streaming pattern —
+    // the cumulative buffer keeps growing until an overflow drains it).
+    expect(result.remainingBuffer).toBe("hello world");
+  });
+
+  it("edits + sends additional messages when buffer overflows", async () => {
+    const { channel, send, sent } = mockChannel();
+    const current = mockMessage();
+    // 5000 chars forces splitMessage to produce multiple chunks
+    // (MAX_DISCORD_LENGTH in output-formatter is 1900).
+    const longBuffer = "a".repeat(5000);
+    const result = await flushStreamBuffer(channel, current, longBuffer);
+    expect(current.edit).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalled();
+    // tail is the LAST sent message, not the original currentMessage.
+    expect(result.tail).toBe(sent[sent.length - 1]);
+    // Multi-chunk overflow: buffer drains (preserves existing pattern).
+    expect(result.remainingBuffer).toBe("");
+  });
+
+  it("falls back to channel.send when edit throws", async () => {
+    const { channel, send, sent } = mockChannel();
+    const current = mockMessage();
+    current.edit = vi
+      .fn()
+      .mockRejectedValue(new Error("Unknown Message"));
+    const result = await flushStreamBuffer(channel, current, "hello");
+    expect(send).toHaveBeenCalled();
+    // After fallback, tail points to the newly-sent message.
+    expect(result.tail).toBe(sent[sent.length - 1]);
   });
 });
