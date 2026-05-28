@@ -165,6 +165,10 @@ class SessionManager {
       components: [stopRow],
     });
     const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
+    // After a tool flush finalizes currentMessage, the next streamed
+    // chunk must create a fresh Discord message — editing the finalized
+    // one would overwrite text the user has already seen below it.
+    let bufferFinalized = false;
 
     // Activity tracking for progress display
     const startTime = Date.now();
@@ -322,6 +326,25 @@ class SessionManager {
           // (post-text, fresh). This is the fix for the UI-freeze bug
           // where tool activity after first text output was invisible.
           await surfaceProgress();
+
+          // Flush any pending streamed text into Discord before showing
+          // a tool's approval / question UI. Without this, the
+          // explanation Claude wrote in the same assistant turn as the
+          // tool call is invisible — it's still buffered behind the
+          // 1500ms throttle. AskUserQuestion is the most visible victim
+          // (it then blocks for up to 5 minutes), but the same fix
+          // applies to Edit / Write / Bash approval embeds.
+          if (responseBuffer.length > 0) {
+            const { tail } = await flushStreamBuffer(
+              channel,
+              currentMessage,
+              responseBuffer,
+            );
+            currentMessage = tail;
+            responseBuffer = "";
+            bufferFinalized = true;
+            lastEditTime = Date.now();
+          }
 
           // Handle AskUserQuestion with interactive Discord UI
           if (toolName === "AskUserQuestion") {
@@ -491,6 +514,16 @@ class SessionManager {
                 // now above unrelated text.
                 lastTextTime = now;
                 progressMessage = null;
+
+                if (bufferFinalized) {
+                  // The previous tool flush froze currentMessage. Open a
+                  // fresh message below it for this batch of streaming
+                  // text, otherwise the helper would overwrite text the
+                  // user has already read.
+                  currentMessage = await channel.send("...");
+                  bufferFinalized = false;
+                }
+
                 const { tail, remainingBuffer } = await flushStreamBuffer(
                   channel,
                   currentMessage,
