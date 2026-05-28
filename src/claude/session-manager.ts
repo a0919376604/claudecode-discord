@@ -160,7 +160,7 @@ class SessionManager {
     let responseBuffer = "";
     let lastEditTime = 0;
     const stopRow = createStopButton(channelId);
-    let currentMessage = await channel.send({
+    let currentMessage: Message = await channel.send({
       content: L("⏳ Thinking...", "⏳ 생각 중..."),
       components: [stopRow],
     });
@@ -491,20 +491,13 @@ class SessionManager {
                 // now above unrelated text.
                 lastTextTime = now;
                 progressMessage = null;
-                const chunks = splitMessage(responseBuffer);
-                try {
-                  await currentMessage.edit({ content: chunks[0] || "...", components: [] });
-                  // Send additional chunks as new messages
-                  for (let i = 1; i < chunks.length; i++) {
-                    currentMessage = await channel.send(chunks[i]);
-                    responseBuffer = chunks.slice(i + 1).join("");
-                  }
-                } catch (e) {
-                  console.warn(`[stream] Failed to edit message for ${channelId}, sending new:`, e instanceof Error ? e.message : e);
-                  currentMessage = await channel.send(
-                    chunks[chunks.length - 1] || "...",
-                  );
-                }
+                const { tail, remainingBuffer } = await flushStreamBuffer(
+                  channel,
+                  currentMessage,
+                  responseBuffer,
+                );
+                currentMessage = tail;
+                responseBuffer = remainingBuffer;
               }
             }
 
