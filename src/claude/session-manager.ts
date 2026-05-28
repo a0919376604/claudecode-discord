@@ -43,6 +43,62 @@ const PROGRESS_STALE_MS = Number(process.env.PROGRESS_STALE_MS) > 0
   ? Number(process.env.PROGRESS_STALE_MS)
   : 30_000;
 
+/**
+ * Finalize `buffer` to Discord. Used by:
+ *   (a) the streaming throttle path — when the 1500ms edit gate fires
+ *   (b) the canUseTool flush — when a tool is about to show approval /
+ *       question UI and we want preceding explanation text visible
+ *
+ * Returns the new "tail" Message (callers should treat this as the new
+ * currentMessage for any subsequent streaming) and a `remainingBuffer`
+ * value that callers in the throttle path should assign back to their
+ * local buffer to preserve the existing cumulative-buffer behavior
+ * (single-chunk: buffer preserved; multi-chunk overflow: buffer drained).
+ *
+ * Empty buffer is a zero-API-call no-op.
+ *
+ * Exported for unit testing — not part of the SessionManager class.
+ */
+export async function flushStreamBuffer(
+  channel: TextChannel,
+  currentMessage: Message,
+  buffer: string,
+): Promise<{ tail: Message; remainingBuffer: string }> {
+  if (buffer.length === 0) {
+    return { tail: currentMessage, remainingBuffer: "" };
+  }
+
+  const chunks = splitMessage(buffer);
+  let tail = currentMessage;
+  let remainingBuffer = buffer;
+
+  try {
+    await currentMessage.edit({
+      content: chunks[0] || "...",
+      components: [],
+    });
+    // Send overflow chunks as new messages. We track remainingBuffer the
+    // way the original throttle path did: after each send, drop the
+    // already-sent prefix so a future edit of `tail` (the new
+    // currentMessage) won't re-render text the user has already seen.
+    for (let i = 1; i < chunks.length; i++) {
+      tail = await channel.send(chunks[i]);
+      remainingBuffer = chunks.slice(i + 1).join("");
+    }
+  } catch (e) {
+    console.warn(
+      `[flush] Failed to edit ${currentMessage.id ?? "(unknown id)"}, sending new:`,
+      e instanceof Error ? e.message : e,
+    );
+    tail = await channel.send({
+      content: chunks[chunks.length - 1] || "...",
+      components: [],
+    });
+  }
+
+  return { tail, remainingBuffer };
+}
+
 interface ActiveSession {
   queryInstance: Query;
   channelId: string;
