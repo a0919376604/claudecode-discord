@@ -552,3 +552,7 @@ After implementing all tasks, verify:
 **No placeholders:** every step has exact file paths, exact code, exact commands, exact expected output.
 
 **Type consistency:** `flushStreamBuffer` is called the same way everywhere. The return shape `{ tail, remainingBuffer }` is consistent across helper definition (Task 2), test usage (Task 1), throttle path (Tasks 3 & 4), and canUseTool flush (Task 4).
+
+## Execution log
+
+- 2026-05-28: Tasks 1-5 completed with `npm test`, `npx tsc --noEmit`, and `npm run build` passing. Task 6 manual reproduction could not be fully executed from this session because `npm run dev` exited with `Another bot instance is already running. Exiting.`, and Discord channel interaction is not available from this environment.
