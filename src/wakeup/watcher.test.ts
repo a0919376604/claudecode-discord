@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { WakeupWatcher } from "./watcher.js";
 import type { WakeupPayload } from "./types.js";
 import Database from "better-sqlite3";
 import { setQueueDb, countByChannel } from "./queue.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const validPayload: WakeupPayload = {
   channel_id: "123456789012345678",
@@ -95,5 +98,92 @@ describe("WakeupWatcher.handleEvent", () => {
     await watcher.handleEvent(validPayload);
     await watcher.handleEvent({ ...validPayload, prompt: "/run-plan status foo updated" });
     expect(countByChannel(validPayload.channel_id)).toBe(1);
+  });
+});
+
+describe("WakeupWatcher filesystem integration", () => {
+  let wakeupDir: string;
+  let legacyDir: string;
+  let watcher: WakeupWatcher;
+  let wakeUp: ReturnType<typeof vi.fn>;
+  let sendPassiveEmbed: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    setQueueDb(freshDb());
+    wakeupDir = fs.mkdtempSync(path.join(os.tmpdir(), "wakeup-dir-"));
+    legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "wakeup-legacy-"));
+    wakeUp = vi.fn().mockResolvedValue(undefined);
+    sendPassiveEmbed = vi.fn().mockResolvedValue(undefined);
+    watcher = new WakeupWatcher({
+      wakeupDir,
+      legacyDir,
+      isChannelRegistered: () => true,
+      hasActiveSession: () => false,
+      wakeUp,
+      sendPassiveEmbed,
+    });
+    await watcher.start();
+  });
+
+  afterEach(async () => {
+    await watcher.stop();
+    fs.rmSync(wakeupDir, { recursive: true, force: true });
+    fs.rmSync(legacyDir, { recursive: true, force: true });
+  });
+
+  it("startup scan picks up files dropped before start()", async () => {
+    await watcher.stop();
+    const payload = {
+      channel_id: "123456789012345678",
+      prompt: "/x",
+      source: "test",
+      created_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(wakeupDir, "pre-existing.json"), JSON.stringify(payload));
+    await watcher.start();
+    // Drain microtasks
+    await new Promise((r) => setTimeout(r, 50));
+    expect(wakeUp).toHaveBeenCalledWith("123456789012345678", "/x", "test");
+    // File got cleaned up
+    expect(fs.existsSync(path.join(wakeupDir, "pre-existing.json"))).toBe(false);
+  });
+
+  it("moves malformed JSON to .rejected/ subdir", async () => {
+    await watcher.stop();
+    fs.writeFileSync(path.join(wakeupDir, "bad.json"), "{ not json");
+    await watcher.start();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(wakeUp).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(wakeupDir, ".rejected", "bad.json"))).toBe(true);
+  });
+
+  it("ignores files lacking .json extension", async () => {
+    await watcher.stop();
+    fs.writeFileSync(path.join(wakeupDir, "temp.tmp"), "ignored");
+    await watcher.start();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(wakeUp).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(wakeupDir, "temp.tmp"))).toBe(true);
+  });
+
+  it("synthesizes payload from legacy /tmp/run-plan-done file", async () => {
+    await watcher.stop();
+    fs.writeFileSync(
+      path.join(legacyDir, "run-plan-done-foo.txt"),
+      "slot=foo\nstatus=DONE\ncommits=+2\n",
+    );
+    fs.writeFileSync(
+      path.join(legacyDir, "run-plan-meta-foo.txt"),
+      "plan=/p\nbranch=main\nchannel_id=123456789012345678\n",
+    );
+    await watcher.start();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(wakeUp).toHaveBeenCalledWith(
+      "123456789012345678",
+      "/run-plan status foo",
+      "run-plan",
+    );
+    // Legacy done file is NOT deleted (skill owns that state)
+    expect(fs.existsSync(path.join(legacyDir, "run-plan-done-foo.txt"))).toBe(true);
   });
 });
