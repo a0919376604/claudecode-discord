@@ -28,6 +28,7 @@ import {
   buildProgressContent,
 } from "./progress-decision.js";
 import { ensureFreshCredentials } from "./credentials-refresher.js";
+import { resolveWakeupDir } from "../wakeup/paths.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -293,7 +294,13 @@ class SessionManager {
         plugins: pluginRegistry.toSdkPluginConfig(),
         permissionMode: skipPerms ? "bypassPermissions" : "default",
         ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
-        env: { ...process.env, ANTHROPIC_API_KEY: undefined, PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: undefined,
+          PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}`,
+          WAKEUP_CHANNEL_ID: channel.id,
+          WAKEUP_DIR: resolveWakeupDir(),
+        },
         ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
         ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
 
@@ -746,6 +753,25 @@ class SessionManager {
         });
       }
     }
+  }
+
+  /**
+   * Spawn a Claude session for an externally-triggered wake-up event
+   * (e.g., codex finishing in the background). The synthesized prompt is
+   * tagged with a Discord channel-context preamble so any skill that
+   * scans conversation history (notably /run-plan Step 7) routes its
+   * completion reply back to this Discord channel.
+   */
+  async wakeUp(
+    channel: TextChannel,
+    prompt: string,
+    source: string,
+  ): Promise<void> {
+    const preamble =
+      `<channel source="discord" chat_id="${channel.id}" user="wakeup:${source}" ts="${new Date().toISOString()}">\n` +
+      `wakeup-prompt source=${source}\n` +
+      `</channel>\n\n`;
+    await this.sendMessage(channel, preamble + prompt);
   }
 
   async stopSession(channelId: string): Promise<boolean> {

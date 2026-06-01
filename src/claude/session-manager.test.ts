@@ -17,11 +17,19 @@ vi.mock("../utils/config.js", () => ({
   getConfig: vi.fn(() => ({ SHOW_COST: true })),
 }));
 
+vi.mock("../wakeup/paths.js", () => ({
+  resolveWakeupDir: vi.fn(() => "/tmp/test-wakeup-dir"),
+}));
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
 }));
 
 import { sessionManager, flushStreamBuffer } from "./session-manager.js";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { getProject as getProjectMock } from "../db/database.js";
+
+const realSendMessage = sessionManager.sendMessage.bind(sessionManager);
 
 // Helper to create a mock TextChannel
 function mockChannel(id: string) {
@@ -216,5 +224,58 @@ describe("flushStreamBuffer", () => {
     expect(send).toHaveBeenCalled();
     // After fallback, tail points to the newly-sent message.
     expect(result.tail).toBe(sent[sent.length - 1]);
+  });
+});
+
+describe("SessionManager.wakeUp", () => {
+  it("delegates to sendMessage with the synthesized prompt", async () => {
+    const calls: { channelId: string; prompt: string }[] = [];
+    sessionManager.sendMessage = async (channel: { id: string }, prompt: string) => {
+      calls.push({ channelId: channel.id, prompt });
+    };
+    // @ts-expect-error - minimal channel stub
+    await sessionManager.wakeUp({ id: "123456789012345678" }, "/run-plan status foo", "run-plan");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].channelId).toBe("123456789012345678");
+    // Prompt should include a Discord channel-context tag so /run-plan Step 7
+    // routes to Discord reply rather than PushNotification.
+    expect(calls[0].prompt).toContain("<channel source=\"discord\"");
+    expect(calls[0].prompt).toContain("chat_id=\"123456789012345678\"");
+    expect(calls[0].prompt).toContain("/run-plan status foo");
+  });
+});
+
+describe("query env injection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionManager.sendMessage = realSendMessage;
+    vi.mocked(getProjectMock).mockReturnValue({
+      channel_id: "123456789012345678",
+      project_path: "/tmp/project",
+      guild_id: "g",
+      auto_approve: 0,
+      source_path: null,
+      created_at: "",
+    });
+    // query() yields nothing then returns — sendMessage will see hasResult=false
+    // and exit cleanly through the existing error path. We don't care about the
+    // result for this test; we only care that env was passed.
+    vi.mocked(query).mockImplementation((() => {
+      const gen = (async function* () {
+        return;
+      })();
+      return Object.assign(gen, { interrupt: async () => {} });
+    }) as unknown as typeof query);
+  });
+
+  it("injects WAKEUP_CHANNEL_ID and WAKEUP_DIR into query env", async () => {
+    const channel = mockChannel("123456789012345678");
+    await sessionManager.sendMessage(channel, "hello").catch(() => {}); // ignore error path
+    expect(query).toHaveBeenCalled();
+    const opts = vi.mocked(query).mock.calls.at(-1)![0] as {
+      options: { env: Record<string, string | undefined> };
+    };
+    expect(opts.options.env.WAKEUP_CHANNEL_ID).toBe("123456789012345678");
+    expect(opts.options.env.WAKEUP_DIR).toBe("/tmp/test-wakeup-dir");
   });
 });
