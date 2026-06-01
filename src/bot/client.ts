@@ -42,6 +42,12 @@ export const commandMap = new Collection<
 >();
 export const pluginRegistry = new PluginRegistry(botOwnedCommandNames);
 
+let _discordClient: Client | null = null;
+export function getDiscordClient(): Client {
+  if (!_discordClient) throw new Error("Discord client not initialized — call startBot() first");
+  return _discordClient;
+}
+
 for (const cmd of commands) {
   commandMap.set(cmd.data.name, cmd);
 }
@@ -56,6 +62,7 @@ export async function startBot(): Promise<Client> {
       GatewayIntentBits.MessageContent,
     ],
   });
+  _discordClient = client;
 
   // Register slash commands after successful login (network guaranteed)
   client.on("ready", async () => {

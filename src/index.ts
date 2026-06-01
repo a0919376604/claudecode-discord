@@ -5,6 +5,7 @@ import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 import { ensureFreshCredentials } from "./claude/credentials-refresher.js";
+import { startWakeupWatcher, stopWakeupWatcher } from "./wakeup/bootstrap.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
 
@@ -44,8 +45,16 @@ async function main() {
 
   // Clean up lock file on exit
   process.on("exit", releaseLock);
-  process.on("SIGINT", () => { releaseLock(); process.exit(0); });
-  process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
+  process.on("SIGINT", () => {
+    stopWakeupWatcher().catch(() => {});
+    releaseLock();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    stopWakeupWatcher().catch(() => {});
+    releaseLock();
+    process.exit(0);
+  });
 
   // Global error handlers — prevent silent hangs from unhandled errors
   process.on("unhandledRejection", (reason) => {
@@ -73,6 +82,8 @@ async function main() {
 
   // Start Discord bot
   await startBot();
+  await startWakeupWatcher();
+  console.log("Wake-up watcher started");
   console.log("Bot is running!");
 }
 
