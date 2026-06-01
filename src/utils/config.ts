@@ -35,6 +35,12 @@ const envSchema = z.object({
   // minutes. 30 is conservative enough to absorb retries on slow
   // networks while still avoiding gratuitous refreshes.
   CLAUDE_REFRESH_THRESHOLD_MIN: z.coerce.number().int().positive().default(30),
+  // Override the default ~/.claudecode-discord/wakeups path. Test hook —
+  // production deployments should leave this unset.
+  WAKEUP_DIR_OVERRIDE: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
 });
 
 export type Config = z.infer<typeof envSchema>;
