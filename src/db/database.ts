@@ -29,6 +29,17 @@ export function initDatabase(): void {
       last_activity TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS wakeup_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      queued_at INTEGER NOT NULL,
+      dedupe_key TEXT,
+      UNIQUE(channel_id, dedupe_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wakeup_queue_channel ON wakeup_queue(channel_id, queued_at);
   `);
 
   // Migration: add source_path column for installations created before /worktree.

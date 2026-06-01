@@ -17,3 +17,5 @@ export interface Session {
   last_activity: string | null;
   created_at: string;
 }
+
+export type { WakeupQueueRow } from "../wakeup/types.js";
