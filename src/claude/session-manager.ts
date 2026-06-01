@@ -29,6 +29,8 @@ import {
 } from "./progress-decision.js";
 import { ensureFreshCredentials } from "./credentials-refresher.js";
 import { resolveWakeupDir } from "../wakeup/paths.js";
+import { drainOldest } from "../wakeup/queue.js";
+import { WakeupPayloadSchema } from "../wakeup/types.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -739,6 +741,7 @@ class SessionManager {
 
       // Process next queued message if any
       const queue = this.messageQueue.get(channelId);
+      const hadInMemoryQueue = Boolean(queue && queue.length > 0);
       if (queue && queue.length > 0) {
         const next = queue.shift()!;
         if (queue.length === 0) this.messageQueue.delete(channelId);
@@ -751,6 +754,34 @@ class SessionManager {
         this.sendMessage(next.channel, next.prompt).catch((err) => {
           console.error("Queue sendMessage error:", err);
         });
+      }
+
+      // After in-memory messageQueue is drained (or if it was empty),
+      // check the persistent wakeup_queue. This is the recovery path for
+      // background tasks that asked to wake Claude up while a session
+      // was active.
+      if (!hadInMemoryQueue) {
+        const wakeupRow = drainOldest(channelId);
+        if (wakeupRow) {
+          try {
+            const payload = WakeupPayloadSchema.parse(JSON.parse(wakeupRow.payload_json));
+            const preview = payload.prompt.length > 40
+              ? payload.prompt.slice(0, 40) + "…"
+              : payload.prompt;
+            channel.send(L(
+              `🎯 Processing queued wakeup from ${payload.source}...\n> ${preview}`,
+              `🎯 대기 중이던 wakeup을 처리합니다 (${payload.source})...\n> ${preview}`,
+            )).catch(() => {});
+            this.wakeUp(channel, payload.prompt, payload.source).catch((err) => {
+              console.error("Queue wakeUp error:", err);
+            });
+          } catch (e) {
+            console.warn(
+              `[wakeup] dropping malformed queue row id=${wakeupRow.id}:`,
+              e instanceof Error ? e.message : e,
+            );
+          }
+        }
       }
     }
   }

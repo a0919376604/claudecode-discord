@@ -21,6 +21,10 @@ vi.mock("../wakeup/paths.js", () => ({
   resolveWakeupDir: vi.fn(() => "/tmp/test-wakeup-dir"),
 }));
 
+vi.mock("../wakeup/queue.js", () => ({
+  drainOldest: vi.fn(),
+}));
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
 }));
@@ -28,6 +32,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 import { sessionManager, flushStreamBuffer } from "./session-manager.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { getProject as getProjectMock } from "../db/database.js";
+import { drainOldest } from "../wakeup/queue.js";
 
 const realSendMessage = sessionManager.sendMessage.bind(sessionManager);
 
@@ -277,5 +282,87 @@ describe("query env injection", () => {
     };
     expect(opts.options.env.WAKEUP_CHANNEL_ID).toBe("123456789012345678");
     expect(opts.options.env.WAKEUP_DIR).toBe("/tmp/test-wakeup-dir");
+  });
+});
+
+describe("sendMessage finally — wakeup queue drain", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionManager.sendMessage = realSendMessage;
+    vi.mocked(getProjectMock).mockReturnValue({
+      channel_id: "123456789012345678",
+      project_path: "/tmp/project",
+      guild_id: "g",
+      auto_approve: 0,
+      source_path: null,
+      created_at: "",
+    });
+    vi.mocked(query).mockImplementation((() => {
+      const gen = (async function* () { return; })();
+      return Object.assign(gen, { interrupt: async () => {} });
+    }) as unknown as typeof query);
+  });
+
+  it("calls wakeUp with queued payload when no in-memory messageQueue exists", async () => {
+    const queuedPayload = {
+      channel_id: "123456789012345678",
+      prompt: "/run-plan status foo",
+      source: "run-plan",
+      metadata: { slot: "foo" },
+      created_at: new Date().toISOString(),
+      ttl_seconds: 86400,
+    };
+    vi.mocked(drainOldest).mockReturnValueOnce({
+      id: 1,
+      channel_id: "123456789012345678",
+      source: "run-plan",
+      payload_json: JSON.stringify(queuedPayload),
+      queued_at: Date.now(),
+      dedupe_key: "run-plan:foo",
+    });
+
+    const wakeUpSpy = vi.spyOn(sessionManager, "wakeUp").mockResolvedValue(undefined);
+    const channel = mockChannel("123456789012345678");
+    await sessionManager.sendMessage(channel, "hello").catch(() => {});
+
+    expect(drainOldest).toHaveBeenCalledWith("123456789012345678");
+    expect(wakeUpSpy).toHaveBeenCalledWith(channel, queuedPayload.prompt, "run-plan");
+    wakeUpSpy.mockRestore();
+  });
+
+  it("does not check wakeup_queue when in-memory messageQueue has items", async () => {
+    const channel = mockChannel("123456789012345678");
+    // Prime the in-memory queue via a public seam: enqueue a fake follow-up
+    // by calling sendMessage twice in flight. The simpler check: after a
+    // single run where no queue entry exists, drainOldest is called once.
+    // When messageQueue has items, drainOldest should NOT be called.
+    // For this test, simulate the in-memory queue path by stuffing
+    // sessionManager["messageQueue"] directly:
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (sessionManager as any).messageQueue.set("123456789012345678", [
+      { channel, prompt: "next user msg" },
+    ]);
+
+    const wakeUpSpy = vi.spyOn(sessionManager, "wakeUp").mockResolvedValue(undefined);
+    // sendMessage is called recursively in the finally for the queued item;
+    // mock it after first call to avoid infinite recursion:
+    const realSend = sessionManager.sendMessage.bind(sessionManager);
+    let callCount = 0;
+    const sendSpy = vi.spyOn(sessionManager, "sendMessage").mockImplementation(async (c, p) => {
+      callCount++;
+      if (callCount === 1) return realSend(c, p);
+      // second call (the recursive one for "next user msg") — no-op
+      return;
+    });
+
+    await realSend(channel, "first").catch(() => {});
+
+    expect(drainOldest).not.toHaveBeenCalled();
+    expect(wakeUpSpy).not.toHaveBeenCalled();
+
+    sendSpy.mockRestore();
+    wakeUpSpy.mockRestore();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (sessionManager as any).messageQueue.clear();
   });
 });
