@@ -2058,3 +2058,15 @@ Before considering this plan done, verify:
 - [ ] AC-001 through AC-007 from the spec all verified by Task 12
 - [ ] No `TODO` / `TBD` left in code
 - [ ] `data.db` migration is safe: re-running `initDatabase()` on an old DB succeeds (the `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` handle this)
+
+## Execution log
+
+2026-06-01:
+- Tasks 1-11 completed in order and committed.
+- Task 12 automated checks passed:
+  - `npx vitest run` — 22 files, 312 tests passed.
+  - `npx tsc --noEmit` — passed.
+  - `npm run build` — passed.
+  - `rg -n "TODO|TBD" src docs/superpowers/plans/2026-06-01-wakeup-channel.md ~/.claude/skills/run-plan/SKILL.md` found only this plan checklist text, not code TODO/TBD.
+- Task 10/12 live dev smoke is blocked by an existing bot instance: `npm run dev` exited with `Another bot instance is already running. Exiting.`
+- Task 12 Discord end-to-end checks were not run because they require a live Discord channel registration and replacing/stopping the already-running bot instance. No Task 12 verification commit was created.
