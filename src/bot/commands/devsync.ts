@@ -126,6 +126,20 @@ export function readServerNames(homeDir?: string): string[] {
   return names;
 }
 
+/**
+ * Extract distinct repo names from the names column of `devsync ls` output.
+ * Session names follow the <repo>--<server> convention (REQ-011 of devsync spec).
+ */
+export function reposFromLs(stdout: string): string[] {
+  const set = new Set<string>();
+  for (const raw of stdout.split("\n")) {
+    const line = raw.trim();
+    const m = line.match(/^([A-Za-z0-9._-]+)--[A-Za-z0-9._-]+/);
+    if (m) set.add(m[1]);
+  }
+  return [...set];
+}
+
 export async function autocomplete(
   interaction: AutocompleteInteraction,
 ): Promise<void> {
@@ -139,7 +153,20 @@ export async function autocomplete(
     await interaction.respond(filtered);
     return;
   }
-  // <repo> autocomplete handled in Task 9
+  if (focused.name === "repo") {
+    const ls = await runDevsync(["ls"]);
+    if (!ls.ok) {
+      await interaction.respond([]);
+      return;
+    }
+    const all = reposFromLs(ls.stdout);
+    const filtered = all
+      .filter((n) => n.startsWith(String(focused.value || "")))
+      .slice(0, 25)
+      .map((n) => ({ name: n, value: n }));
+    await interaction.respond(filtered);
+    return;
+  }
   await interaction.respond([]);
 }
 

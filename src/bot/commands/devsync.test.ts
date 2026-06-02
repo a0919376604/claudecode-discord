@@ -379,3 +379,53 @@ describe("/devsync autocomplete — server", () => {
     expect(i.respond).toHaveBeenCalledWith([]);
   });
 });
+
+describe("/devsync autocomplete — repo", () => {
+  beforeEach(() => vi.mocked(runDevsync).mockReset());
+
+  it("returns distinct repo names extracted from `devsync ls` output", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: [
+        "Name             Server",
+        "alpha--dl01      dl01",
+        "alpha--dl02      dl02",
+        "beta--dl01       dl01",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const i = makeAutocomplete("stop", "repo", "");
+    await autocomplete(i);
+    const names = vi.mocked(i.respond).mock.calls[0][0].map((c: any) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["alpha", "beta"]));
+    // De-duped: 'alpha' should appear once
+    expect(names.filter((n: string) => n === "alpha").length).toBe(1);
+  });
+
+  it("filters by focused prefix", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: ["alpha--dl01", "beta--dl02", "gamma--dl03"].join("\n"),
+      stderr: "",
+    });
+    const i = makeAutocomplete("stop", "repo", "b");
+    await autocomplete(i);
+    const names = vi.mocked(i.respond).mock.calls[0][0].map((c: any) => c.name);
+    expect(names).toEqual(["beta"]);
+  });
+
+  it("returns empty when ls fails or no sessions", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "No active sessions.",
+      stderr: "",
+    });
+    const i = makeAutocomplete("stop", "repo", "");
+    await autocomplete(i);
+    expect(i.respond).toHaveBeenCalledWith([]);
+  });
+});
