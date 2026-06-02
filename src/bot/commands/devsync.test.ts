@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { data, execute } from "./devsync.js";
 
 vi.mock("../../utils/devsync-cli.js", () => ({
@@ -306,5 +306,76 @@ describe("/devsync start", () => {
     expect(arg.components).toBeDefined();
     const customIds = arg.components[0].components.map((c: any) => c.data.custom_id);
     expect(customIds).toContain("devsync:start:reuse:foo--dl02");
+  });
+});
+
+import fs from "node:fs";
+import os from "node:os";
+import { autocomplete } from "./devsync.js";
+
+function makeAutocomplete(subcommand: string, optionName: string, focused: string) {
+  return {
+    options: {
+      getSubcommand: vi.fn(() => subcommand),
+      getFocused: vi.fn(() => ({ name: optionName, value: focused })),
+    },
+    respond: vi.fn().mockResolvedValue(undefined),
+  } as any;
+}
+
+describe("/devsync autocomplete — server", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns keys of [servers.*] from config.toml", async () => {
+    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    vi.spyOn(fs, "readFileSync").mockImplementation((p) => {
+      if (String(p).endsWith("/.config/devsync/config.toml")) {
+        return [
+          "[defaults]",
+          'code_root = "/x"',
+          'remote_base = "/y"',
+          "",
+          "[servers.dl01]",
+          'host = "dl01"',
+          "",
+          "[servers.dl02]",
+          'host = "dl02"',
+          "",
+          "[servers.dl03]",
+          'host = "dl03"',
+        ].join("\n");
+      }
+      throw new Error("unexpected path: " + p);
+    });
+
+    const i = makeAutocomplete("start", "server", "");
+    await autocomplete(i);
+    expect(i.respond).toHaveBeenCalled();
+    const choices = vi.mocked(i.respond).mock.calls[0][0];
+    const names = choices.map((c: any) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["dl01", "dl02", "dl03"]));
+  });
+
+  it("filters by focused prefix", async () => {
+    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    vi.spyOn(fs, "readFileSync").mockReturnValue(
+      ["[servers.dl01]", "host = \"dl01\"", "", "[servers.dl02]", "host = \"dl02\"", "", "[servers.gpu1]", "host = \"gpu1\""].join("\n"),
+    );
+    const i = makeAutocomplete("start", "server", "dl");
+    await autocomplete(i);
+    const names = vi.mocked(i.respond).mock.calls[0][0].map((c: any) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["dl01", "dl02"]));
+    expect(names).not.toContain("gpu1");
+  });
+
+  it("returns empty array if config.toml is missing", async () => {
+    vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+      const e: NodeJS.ErrnoException = new Error("ENOENT");
+      e.code = "ENOENT";
+      throw e;
+    });
+    const i = makeAutocomplete("start", "server", "");
+    await autocomplete(i);
+    expect(i.respond).toHaveBeenCalledWith([]);
   });
 });

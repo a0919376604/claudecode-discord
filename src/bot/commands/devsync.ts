@@ -1,10 +1,14 @@
 import {
   ActionRowBuilder,
+  AutocompleteInteraction,
   ButtonBuilder,
   ButtonStyle,
   ChatInputCommandInteraction,
   SlashCommandBuilder,
 } from "discord.js";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { runDevsync, type DevsyncResult } from "../../utils/devsync-cli.js";
 import { L } from "../../utils/i18n.js";
 
@@ -94,6 +98,49 @@ export async function execute(
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
   });
+}
+
+/**
+ * Parse the `[servers.*]` table headers from `~/.config/devsync/config.toml`
+ * and return the server names. Tolerates missing file (returns []) and
+ * malformed TOML (best-effort substring match — autocomplete is non-critical).
+ */
+export function readServerNames(homeDir?: string): string[] {
+  const cfgPath = path.join(
+    homeDir ?? os.homedir(),
+    ".config",
+    "devsync",
+    "config.toml",
+  );
+  let text: string;
+  try {
+    text = fs.readFileSync(cfgPath, "utf-8");
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.trim().match(/^\[servers\.([^\]\s]+)\]$/);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
+export async function autocomplete(
+  interaction: AutocompleteInteraction,
+): Promise<void> {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name === "server") {
+    const all = readServerNames();
+    const filtered = all
+      .filter((n) => n.startsWith(String(focused.value || "")))
+      .slice(0, 25)
+      .map((n) => ({ name: n, value: n }));
+    await interaction.respond(filtered);
+    return;
+  }
+  // <repo> autocomplete handled in Task 9
+  await interaction.respond([]);
 }
 
 // ─── Subcommand handlers ───
