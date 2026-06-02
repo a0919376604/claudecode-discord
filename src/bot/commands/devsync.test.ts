@@ -74,3 +74,42 @@ describe("/devsync doctor", () => {
     expect(content).toContain("some error");
   });
 });
+
+describe("/devsync ls", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("calls runDevsync(['ls']) and wraps output in a code block", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "Name   Server\nfoo    dl02",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("ls");
+    await execute(interaction);
+
+    expect(runDevsync).toHaveBeenCalledWith(["ls"]);
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("foo    dl02");
+  });
+
+  it("passes through the 'No active sessions' message from CLI", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "No active sessions.",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("ls");
+    await execute(interaction);
+
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("No active sessions");
+  });
+});

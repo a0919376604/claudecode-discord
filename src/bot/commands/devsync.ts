@@ -12,6 +12,9 @@ export const data = new SlashCommandBuilder()
   .setDescription("Control the local devsync CLI (mutagen wrapper)")
   .addSubcommand((sub) =>
     sub.setName("doctor").setDescription("Health-check daemon + servers"),
+  )
+  .addSubcommand((sub) =>
+    sub.setName("ls").setDescription("List active devsync-managed sync sessions"),
   );
 
 export async function execute(
@@ -19,6 +22,7 @@ export async function execute(
 ): Promise<void> {
   const sub = interaction.options.getSubcommand();
   if (sub === "doctor") return handleDoctor(interaction);
+  if (sub === "ls") return handleLs(interaction);
   // Future subcommands wired in later tasks.
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
@@ -32,6 +36,13 @@ async function handleDoctor(
 ): Promise<void> {
   const r = await runDevsync(["doctor"]);
   await replyWithResult(interaction, "doctor", r);
+}
+
+async function handleLs(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const r = await runDevsync(["ls"]);
+  await replyWithResult(interaction, "ls", r);
 }
 
 // ─── Helpers ───
