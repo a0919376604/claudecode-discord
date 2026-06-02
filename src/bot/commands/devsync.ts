@@ -15,6 +15,30 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub.setName("ls").setDescription("List active devsync-managed sync sessions"),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("status")
+      .setDescription("Show detailed sync status for a repo")
+      .addStringOption((opt) =>
+        opt
+          .setName("repo")
+          .setDescription("Repo name (active session)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("flush")
+      .setDescription("Force an immediate sync cycle for a repo")
+      .addStringOption((opt) =>
+        opt
+          .setName("repo")
+          .setDescription("Repo name (active session)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
   );
 
 export async function execute(
@@ -23,6 +47,8 @@ export async function execute(
   const sub = interaction.options.getSubcommand();
   if (sub === "doctor") return handleDoctor(interaction);
   if (sub === "ls") return handleLs(interaction);
+  if (sub === "status") return handleStatus(interaction);
+  if (sub === "flush") return handleFlush(interaction);
   // Future subcommands wired in later tasks.
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
@@ -43,6 +69,22 @@ async function handleLs(
 ): Promise<void> {
   const r = await runDevsync(["ls"]);
   await replyWithResult(interaction, "ls", r);
+}
+
+async function handleStatus(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const repo = interaction.options.getString("repo", true);
+  const r = await runDevsync(["status", repo]);
+  await replyWithResult(interaction, "status", r);
+}
+
+async function handleFlush(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const repo = interaction.options.getString("repo", true);
+  const r = await runDevsync(["flush", repo]);
+  await replyWithResult(interaction, "flush", r);
 }
 
 // ─── Helpers ───

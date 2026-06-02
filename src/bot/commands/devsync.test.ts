@@ -113,3 +113,45 @@ describe("/devsync ls", () => {
     expect(content).toContain("No active sessions");
   });
 });
+
+describe("/devsync status", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("calls runDevsync(['status', '<repo>']) with the provided repo", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "Status: Watching for changes",
+      stderr: "",
+    });
+    const interaction = makeInteraction("status", { repo: "alpha" });
+    await execute(interaction);
+    expect(runDevsync).toHaveBeenCalledWith(["status", "alpha"]);
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("Watching");
+  });
+});
+
+describe("/devsync flush", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("calls runDevsync(['flush', '<repo>']) and replies with success", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "✓ Flushed alpha--dl02.",
+      stderr: "",
+    });
+    const interaction = makeInteraction("flush", { repo: "alpha" });
+    await execute(interaction);
+    expect(runDevsync).toHaveBeenCalledWith(["flush", "alpha"]);
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("Flushed");
+  });
+});
