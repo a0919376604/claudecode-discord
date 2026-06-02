@@ -232,3 +232,79 @@ describe("/devsync stop_all", () => {
     expect(customIds).toContain("devsync:stop_all:cancel");
   });
 });
+
+describe("/devsync start", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("with no existing session, spawns devsync start with --no-ssh", async () => {
+    // First call: ls (no match) → empty list output
+    vi.mocked(runDevsync).mockResolvedValueOnce({
+      ok: true,
+      code: 0,
+      stdout: "No active sessions.",
+      stderr: "",
+    });
+    // Second call: actual start
+    vi.mocked(runDevsync).mockResolvedValueOnce({
+      ok: true,
+      code: 0,
+      stdout: "→ Sync session created: foo--dl02",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("start", { repo: "foo", server: "dl02" });
+    await execute(interaction);
+
+    expect(runDevsync).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runDevsync).mock.calls[0][0]).toEqual(["ls"]);
+    expect(vi.mocked(runDevsync).mock.calls[1][0]).toEqual(["start", "foo", "dl02", "--no-ssh"]);
+
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("Sync session created");
+  });
+
+  it("with existing session, replies with 3 buttons (Reuse/Restart/Cancel)", async () => {
+    vi.mocked(runDevsync).mockResolvedValueOnce({
+      ok: true,
+      code: 0,
+      stdout:
+        "Name             Server\nfoo--dl02        dl02",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("start", { repo: "foo", server: "dl02" });
+    await execute(interaction);
+
+    // Did not spawn start; only ls
+    expect(runDevsync).toHaveBeenCalledTimes(1);
+
+    const arg = vi.mocked(interaction.editReply).mock.calls[0][0] as any;
+    expect(arg.components).toBeDefined();
+    const customIds = arg.components[0].components.map((c: any) => c.data.custom_id);
+    expect(customIds).toContain("devsync:start:reuse:foo--dl02");
+    expect(customIds).toContain("devsync:start:restart:foo--dl02");
+    expect(customIds).toContain("devsync:start:cancel");
+  });
+
+  it("falls back to buttons when start fails with 'already exists' race", async () => {
+    vi.mocked(runDevsync).mockResolvedValueOnce({
+      ok: true, code: 0, stdout: "No active sessions.", stderr: "",
+    });
+    vi.mocked(runDevsync).mockResolvedValueOnce({
+      ok: false, code: 1, stdout: "",
+      stderr: "Mutagen session 'foo--dl02' already exists.",
+    });
+
+    const interaction = makeInteraction("start", { repo: "foo", server: "dl02" });
+    await execute(interaction);
+
+    const arg = vi.mocked(interaction.editReply).mock.calls[0][0] as any;
+    // Should NOT just print the failure — should show 3 buttons.
+    expect(arg.components).toBeDefined();
+    const customIds = arg.components[0].components.map((c: any) => c.data.custom_id);
+    expect(customIds).toContain("devsync:start:reuse:foo--dl02");
+  });
+});

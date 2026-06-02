@@ -44,16 +44,66 @@ export async function handleDevsyncButton(
     });
     return;
   }
-  // start:* buttons wired in Task 7.
   if (family === "start") {
-    // Placeholder until Task 7
     await interaction.deferUpdate();
-    await interaction.editReply({
-      content: L("Start button handler not yet implemented.", "Start 버튼 핸들러 미구현."),
-      components: [],
-    });
-    // Reference unused payload var so TS strict noUnusedLocals is happy
-    void payload;
+
+    if (action === "cancel") {
+      await interaction.editReply({
+        content: L("Cancelled.", "취소되었습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    const sessionName = payload; // <repo>--<server>
+    const sepIdx = sessionName.indexOf("--");
+    if (sepIdx < 0) {
+      await interaction.editReply({
+        content: L(
+          `Malformed session name in button: ${sessionName}`,
+          `버튼에 잘못된 세션 이름: ${sessionName}`,
+        ),
+        components: [],
+      });
+      return;
+    }
+    const repo = sessionName.slice(0, sepIdx);
+    const server = sessionName.slice(sepIdx + 2);
+
+    if (action === "reuse") {
+      await interaction.editReply({
+        content: L(`✓ Reusing session \`${sessionName}\`.`, `✓ \`${sessionName}\` 세션 재사용.`),
+        components: [],
+      });
+      return;
+    }
+
+    if (action === "restart") {
+      const stop = await runDevsync(["stop", repo]);
+      if (!stop.ok) {
+        await interaction.editReply({
+          content: L(
+            `✗ Could not stop existing session (exit ${stop.code}):\n\`\`\`\n${stop.stderr || stop.stdout}\n\`\`\``,
+            `✗ 기존 세션 중지 실패 (exit ${stop.code}):\n\`\`\`\n${stop.stderr || stop.stdout}\n\`\`\``,
+          ),
+          components: [],
+        });
+        return;
+      }
+      const create = await runDevsync(["start", repo, server, "--no-ssh"]);
+      await interaction.editReply({
+        content: create.ok
+          ? L(`✓ Restarted \`${sessionName}\`.\n\`\`\`\n${create.stdout.trim() || ""}\n\`\`\``,
+              `✓ \`${sessionName}\` 재시작 완료.\n\`\`\`\n${create.stdout.trim() || ""}\n\`\`\``)
+          : L(`✗ Restart failed (exit ${create.code}):\n\`\`\`\n${create.stderr || create.stdout}\n\`\`\``,
+              `✗ 재시작 실패 (exit ${create.code}):\n\`\`\`\n${create.stderr || create.stdout}\n\`\`\``),
+        components: [],
+      });
+      return;
+    }
+
+    // Unknown action under "start" — log and end.
+    console.warn(`[devsync-buttons] unknown start action: ${action}`);
     return;
   }
   // Unknown — log and silently swallow (the dispatcher already filtered prefix).

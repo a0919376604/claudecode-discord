@@ -59,6 +59,24 @@ export const data = new SlashCommandBuilder()
     sub
       .setName("stop_all")
       .setDescription("Terminate every devsync-managed sync session"),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("start")
+      .setDescription("Start a sync session for <repo> against <server>")
+      .addStringOption((opt) =>
+        opt
+          .setName("repo")
+          .setDescription("Repo name under code_root")
+          .setRequired(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("server")
+          .setDescription("Target server (dl01..dl04)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
   );
 
 export async function execute(
@@ -71,6 +89,7 @@ export async function execute(
   if (sub === "flush") return handleFlush(interaction);
   if (sub === "stop") return handleStop(interaction);
   if (sub === "stop_all") return handleStopAll(interaction);
+  if (sub === "start") return handleStart(interaction);
   // Future subcommands wired in later tasks.
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
@@ -163,6 +182,73 @@ async function handleStopAll(
     content: L(
       `⚠️ About to terminate ${n} active devsync session(s).`,
       `⚠️ ${n}개의 devsync 세션을 종료하려고 합니다.`,
+    ),
+    components: [row],
+  });
+}
+
+/**
+ * Detect whether `devsync ls` output already contains a session for
+ * <repo>--<server>. Looks for that exact prefix at the start of any line.
+ */
+export function lsHasSession(
+  stdout: string,
+  repo: string,
+  server: string,
+): boolean {
+  const name = `${repo}--${server}`;
+  return stdout.split("\n").some((line) => line.trim().startsWith(name));
+}
+
+async function handleStart(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const repo = interaction.options.getString("repo", true);
+  const server = interaction.options.getString("server", true);
+  const name = `${repo}--${server}`;
+
+  const ls = await runDevsync(["ls"]);
+  if (!ls.ok) {
+    await replyWithResult(interaction, "start", ls);
+    return;
+  }
+
+  if (lsHasSession(ls.stdout, repo, server)) {
+    await replyWithConflictButtons(interaction, name);
+    return;
+  }
+
+  const create = await runDevsync(["start", repo, server, "--no-ssh"]);
+  if (!create.ok && /already exists/i.test(create.stderr + create.stdout)) {
+    // Race: between ls and start, someone else created it. Fall back to buttons.
+    await replyWithConflictButtons(interaction, name);
+    return;
+  }
+  await replyWithResult(interaction, "start", create);
+}
+
+async function replyWithConflictButtons(
+  interaction: ChatInputCommandInteraction,
+  sessionName: string,
+): Promise<void> {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`devsync:start:reuse:${sessionName}`)
+      .setLabel(L("Reuse", "재사용"))
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`devsync:start:restart:${sessionName}`)
+      .setLabel(L("Restart", "재시작"))
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId("devsync:start:cancel")
+      .setLabel(L("Cancel", "취소"))
+      .setStyle(ButtonStyle.Secondary),
+  );
+  await interaction.editReply({
+    content: L(
+      `ⓘ Session \`${sessionName}\` already exists.`,
+      `ⓘ \`${sessionName}\` 세션이 이미 존재합니다.`,
     ),
     components: [row],
   });
