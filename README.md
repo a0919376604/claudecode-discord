@@ -149,6 +149,38 @@ claudecode-discord/
 | `/queue clear` | Cancel all queued messages | |
 | `/clear-sessions` | Delete all session files for the project | |
 
+### `/devsync` — Control local Mutagen sync sessions
+
+If you've installed [devsync](https://github.com/leric/devsync) on the bot host
+(`uv tool install ~/Desktop/code/devsync`), you can drive it from Discord:
+
+| Subcommand | What it does |
+|---|---|
+| `/devsync doctor` | Health-check the mutagen daemon + each configured server |
+| `/devsync ls` | List active devsync-managed sync sessions |
+| `/devsync start <repo> <server>` | Start a new sync session (Reuse/Restart/Cancel buttons if one exists) |
+| `/devsync stop <repo>` | Terminate the session for one repo |
+| `/devsync stop_all` | Terminate every devsync session (confirm button) |
+| `/devsync status <repo>` | Detailed status (staged files, problems) |
+| `/devsync flush <repo>` | Force an immediate sync cycle |
+
+**Smoke checklist** (run after every release of this bot):
+
+```
+[ ] /devsync doctor                              → 4-server table renders
+[ ] /devsync ls                                  → sessions list (or "No active sessions")
+[ ] /devsync start foo dl02                      → session created
+[ ] /devsync start foo dl02 (repeat)             → 3 buttons appear (Reuse / Restart / Cancel)
+[ ] press Cancel                                 → message edits to "Cancelled."
+[ ] press Restart                                → old session terminated, new one starts
+[ ] /devsync stop foo                            → session terminated
+[ ] /devsync stop_all (with N≥1 sessions)        → 2 buttons (Confirm / Cancel)
+[ ] press Confirm                                → all sessions terminated
+[ ] autocomplete on /devsync start <server>      → lists dl01..dl04
+[ ] autocomplete on /devsync stop <repo>         → lists current repos
+[ ] devsync binary missing (PATH manipulation)   → install hint shown
+```
+
 The `/register` command shows an **autocomplete dropdown** listing subdirectories under `BASE_PROJECT_DIR` — just start typing to filter and select.
 The first option `.` registers the base directory itself. You can also type a custom path; absolute paths work too.
 
