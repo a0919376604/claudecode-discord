@@ -39,6 +39,15 @@ export async function handleButtonInteraction(
     return;
   }
 
+  // Devsync buttons (handled by dedicated module). Delegate before the
+  // existing handlers so customIds prefixed with "devsync:" never fall
+  // through to the legacy action-name branches.
+  if (action === "devsync") {
+    const { handleDevsyncButton } = await import("./devsync-buttons.js");
+    await handleDevsyncButton(interaction);
+    return;
+  }
+
   // Handle stop button
   if (action === "stop") {
     const channelId = requestId;

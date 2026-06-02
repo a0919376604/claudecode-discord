@@ -176,3 +176,59 @@ describe("/devsync stop", () => {
     expect(content).toContain("Terminated");
   });
 });
+
+describe("/devsync stop_all", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("with zero sessions replies 'no sessions to terminate' without buttons", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "No active sessions.",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("stop_all");
+    await execute(interaction);
+
+    // Should only check `ls`, never invoke stop --all
+    expect(runDevsync).toHaveBeenCalledTimes(1);
+    expect(runDevsync).toHaveBeenCalledWith(["ls"]);
+    const arg = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content =
+      typeof arg === "string" ? arg : (arg.content ?? JSON.stringify(arg));
+    expect(content.toLowerCase()).toContain("no sessions");
+  });
+
+  it("with N>0 sessions replies with Confirm/Cancel buttons", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      // Mimic the CLI: header line + 2 entries
+      stdout:
+        "Name             Server\nalpha--dl01      dl01\nbeta--dl02       dl02",
+      stderr: "",
+    });
+
+    const interaction = makeInteraction("stop_all");
+    await execute(interaction);
+
+    // Did not call stop --all yet; only ls
+    expect(runDevsync).toHaveBeenCalledTimes(1);
+    expect(runDevsync).toHaveBeenCalledWith(["ls"]);
+
+    const arg = vi.mocked(interaction.editReply).mock.calls[0][0] as any;
+    expect(arg.components).toBeDefined();
+    expect(arg.components.length).toBeGreaterThan(0);
+    const labels = arg.components[0].components.map((c: any) => c.data.label);
+    expect(labels.some((l: string) => /confirm/i.test(l))).toBe(true);
+    expect(labels.some((l: string) => /cancel/i.test(l))).toBe(true);
+    const customIds = arg.components[0].components.map(
+      (c: any) => c.data.custom_id,
+    );
+    expect(customIds).toContain("devsync:stop_all:confirm");
+    expect(customIds).toContain("devsync:stop_all:cancel");
+  });
+});
