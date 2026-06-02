@@ -429,3 +429,48 @@ describe("/devsync autocomplete — repo", () => {
     expect(i.respond).toHaveBeenCalledWith([]);
   });
 });
+
+describe("/devsync error enrichment", () => {
+  beforeEach(() => vi.mocked(runDevsync).mockReset());
+
+  it("appends install hint when exit code is 127 (ENOENT)", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: false,
+      code: 127,
+      stdout: "",
+      stderr: "devsync CLI not found. Install: uv tool install ~/Desktop/code/devsync",
+    });
+    const interaction = makeInteraction("doctor");
+    await execute(interaction);
+    const content = vi.mocked(interaction.editReply).mock.calls[0][0].content;
+    expect(content).toMatch(/uv tool install/);
+  });
+
+  it("appends VPN hint when stderr mentions 'Cannot reach server'", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: false,
+      code: 3,
+      stdout: "",
+      stderr: "Cannot reach server 'dl02' (192.168.90.32): timeout",
+    });
+    const interaction = makeInteraction("doctor");
+    await execute(interaction);
+    const content = vi.mocked(interaction.editReply).mock.calls[0][0].content;
+    expect(content).toMatch(/VPN/i);
+  });
+
+  it("truncates output longer than 1900 chars", async () => {
+    const long = "x".repeat(3000);
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: long,
+      stderr: "",
+    });
+    const interaction = makeInteraction("doctor");
+    await execute(interaction);
+    const content = vi.mocked(interaction.editReply).mock.calls[0][0].content;
+    expect(content).toMatch(/\(truncated\)/);
+    expect(content.length).toBeLessThan(2000);
+  });
+});

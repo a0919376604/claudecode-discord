@@ -348,6 +348,24 @@ async function replyWithResult(
   }
   const body = truncate(r.stderr || r.stdout || "(no output)");
   let content = `✗ devsync ${subcommand} failed (exit ${r.code})\n\`\`\`\n${body}\n\`\`\``;
-  // Hint enrichment is added in Task 11.
+
+  // Hint enrichment
+  const stderrLower = r.stderr.toLowerCase();
+  if (r.code === 127) {
+    content += L(
+      `\nInstall: \`uv tool install ~/Desktop/code/devsync\``,
+      `\n설치: \`uv tool install ~/Desktop/code/devsync\``,
+    );
+  } else if (
+    stderrLower.includes("cannot reach server") ||
+    stderrLower.includes("connection timed out") ||
+    stderrLower.includes("operation timed out")
+  ) {
+    content += L(
+      `\nCheck VPN: run \`/vpn status\` on the bot host.`,
+      `\nVPN 확인: bot 호스트에서 \`/vpn status\` 실행.`,
+    );
+  }
+
   await interaction.editReply({ content });
 }
