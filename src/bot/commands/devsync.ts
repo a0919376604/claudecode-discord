@@ -39,6 +39,18 @@ export const data = new SlashCommandBuilder()
           .setRequired(true)
           .setAutocomplete(true),
       ),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("stop")
+      .setDescription("Terminate the sync session for a repo")
+      .addStringOption((opt) =>
+        opt
+          .setName("repo")
+          .setDescription("Repo name (active session)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
   );
 
 export async function execute(
@@ -49,6 +61,7 @@ export async function execute(
   if (sub === "ls") return handleLs(interaction);
   if (sub === "status") return handleStatus(interaction);
   if (sub === "flush") return handleFlush(interaction);
+  if (sub === "stop") return handleStop(interaction);
   // Future subcommands wired in later tasks.
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
@@ -85,6 +98,14 @@ async function handleFlush(
   const repo = interaction.options.getString("repo", true);
   const r = await runDevsync(["flush", repo]);
   await replyWithResult(interaction, "flush", r);
+}
+
+async function handleStop(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const repo = interaction.options.getString("repo", true);
+  const r = await runDevsync(["stop", repo]);
+  await replyWithResult(interaction, "stop", r);
 }
 
 // ─── Helpers ───

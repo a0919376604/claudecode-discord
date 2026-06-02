@@ -155,3 +155,24 @@ describe("/devsync flush", () => {
     expect(content).toContain("Flushed");
   });
 });
+
+describe("/devsync stop", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+  });
+
+  it("calls runDevsync(['stop', '<repo>']) and replies", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "✓ Terminated 1 session(s) for repo 'alpha'.",
+      stderr: "",
+    });
+    const interaction = makeInteraction("stop", { repo: "alpha" });
+    await execute(interaction);
+    expect(runDevsync).toHaveBeenCalledWith(["stop", "alpha"]);
+    const text = vi.mocked(interaction.editReply).mock.calls[0][0];
+    const content = typeof text === "string" ? text : (text.content ?? "");
+    expect(content).toContain("Terminated");
+  });
+});
