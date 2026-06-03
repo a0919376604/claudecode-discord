@@ -292,7 +292,8 @@ async function handleStart(
     return;
   }
 
-  const create = await runDevsync(["start", repo, server, "--no-ssh"]);
+  const repoPath = path.join(os.homedir(), "Desktop", "code", repo);
+  const create = await runDevsync(["start", server, repoPath, "--no-ssh"]);
   if (!create.ok && /already exists/i.test(create.stderr + create.stdout)) {
     // Race: between ls and start, someone else created it. Fall back to buttons.
     await replyWithConflictButtons(interaction, name);

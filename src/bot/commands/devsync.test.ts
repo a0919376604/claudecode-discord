@@ -259,7 +259,13 @@ describe("/devsync start", () => {
 
     expect(runDevsync).toHaveBeenCalledTimes(2);
     expect(vi.mocked(runDevsync).mock.calls[0][0]).toEqual(["ls"]);
-    expect(vi.mocked(runDevsync).mock.calls[1][0]).toEqual(["start", "foo", "dl02", "--no-ssh"]);
+    const expectedPath = path.join(os.homedir(), "Desktop", "code", "foo");
+    expect(vi.mocked(runDevsync).mock.calls[1][0]).toEqual([
+      "start",
+      "dl02",
+      expectedPath,
+      "--no-ssh",
+    ]);
 
     const text = vi.mocked(interaction.editReply).mock.calls[0][0];
     const content = typeof text === "string" ? text : (text.content ?? "");
@@ -311,6 +317,7 @@ describe("/devsync start", () => {
 
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { autocomplete } from "./devsync.js";
 
 function makeAutocomplete(subcommand: string, optionName: string, focused: string) {
