@@ -437,6 +437,94 @@ describe("/devsync autocomplete — repo", () => {
   });
 });
 
+describe("/devsync autocomplete — repo for start", () => {
+  beforeEach(() => {
+    vi.mocked(runDevsync).mockReset();
+    vi.restoreAllMocks();
+  });
+
+  it("lists subdirectories of ~/Desktop/code when subcommand=start", async () => {
+    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    vi.spyOn(fs, "readdirSync").mockImplementation((p, _opts) => {
+      if (String(p) === "/fake/home/Desktop/code") {
+        return [
+          { name: "ai_system", isDirectory: () => true },
+          { name: "claudecode-discord", isDirectory: () => true },
+          { name: ".DS_Store", isDirectory: () => false },
+          { name: ".cache", isDirectory: () => true },
+        ] as any;
+      }
+      throw new Error(`unexpected readdir: ${p}`);
+    });
+
+    const interaction = {
+      options: {
+        getSubcommand: vi.fn(() => "start"),
+        getFocused: vi.fn(() => ({ name: "repo", value: "" })),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await autocomplete(interaction);
+    expect(interaction.respond).toHaveBeenCalled();
+    const choices = vi.mocked(interaction.respond).mock.calls[0][0];
+    const names = choices.map((c: any) => c.name);
+    expect(names).toContain("ai_system");
+    expect(names).toContain("claudecode-discord");
+    expect(names).not.toContain(".DS_Store");   // file filtered
+    expect(names).not.toContain(".cache");      // dotfile filtered
+  });
+
+  it("filters by prefix typed so far", async () => {
+    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    vi.spyOn(fs, "readdirSync").mockImplementation((p) => {
+      if (String(p) === "/fake/home/Desktop/code") {
+        return [
+          { name: "ai_system", isDirectory: () => true },
+          { name: "ai-eden", isDirectory: () => true },
+          { name: "langlive", isDirectory: () => true },
+        ] as any;
+      }
+      throw new Error("unexpected");
+    });
+
+    const interaction = {
+      options: {
+        getSubcommand: vi.fn(() => "start"),
+        getFocused: vi.fn(() => ({ name: "repo", value: "ai" })),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await autocomplete(interaction);
+    const names = vi.mocked(interaction.respond).mock.calls[0][0].map((c: any) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["ai_system", "ai-eden"]));
+    expect(names).not.toContain("langlive");
+  });
+
+  it("still uses devsync ls for repo autocomplete on stop", async () => {
+    vi.mocked(runDevsync).mockResolvedValue({
+      ok: true,
+      code: 0,
+      stdout: "alpha--dl01\nbeta--dl02",
+      stderr: "",
+    });
+
+    const interaction = {
+      options: {
+        getSubcommand: vi.fn(() => "stop"),
+        getFocused: vi.fn(() => ({ name: "repo", value: "" })),
+      },
+      respond: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await autocomplete(interaction);
+    expect(runDevsync).toHaveBeenCalledWith(["ls"]);
+    const names = vi.mocked(interaction.respond).mock.calls[0][0].map((c: any) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["alpha", "beta"]));
+  });
+});
+
 describe("/devsync error enrichment", () => {
   beforeEach(() => vi.mocked(runDevsync).mockReset());
 

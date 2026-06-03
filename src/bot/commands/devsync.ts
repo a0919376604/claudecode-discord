@@ -71,8 +71,9 @@ export const data = new SlashCommandBuilder()
       .addStringOption((opt) =>
         opt
           .setName("repo")
-          .setDescription("Repo name under code_root")
-          .setRequired(true),
+          .setDescription("Repo name (subdirectory of ~/Desktop/code/)")
+          .setRequired(true)
+          .setAutocomplete(true),
       )
       .addStringOption((opt) =>
         opt
@@ -154,6 +155,27 @@ export async function autocomplete(
     return;
   }
   if (focused.name === "repo") {
+    const sub = interaction.options.getSubcommand();
+    if (sub === "start") {
+      const reposDir = path.join(os.homedir(), "Desktop", "code");
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(reposDir, { withFileTypes: true });
+      } catch {
+        await interaction.respond([]);
+        return;
+      }
+      const all = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+        .map((e) => e.name);
+      const filtered = all
+        .filter((n) => n.startsWith(String(focused.value || "")))
+        .slice(0, 25)
+        .map((n) => ({ name: n, value: n }));
+      await interaction.respond(filtered);
+      return;
+    }
+    // Existing path: stop / status / flush → active sessions
     const ls = await runDevsync(["ls"]);
     if (!ls.ok) {
       await interaction.respond([]);
