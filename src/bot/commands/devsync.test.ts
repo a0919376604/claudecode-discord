@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { data, execute } from "./devsync.js";
 
-vi.mock("../../utils/devsync-cli.js", () => ({
-  runDevsync: vi.fn(),
-}));
+vi.mock("../../utils/devsync-cli.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../utils/devsync-cli.js")>();
+  return {
+    ...actual,
+    runDevsync: vi.fn(),
+  };
+});
 
 import { runDevsync } from "../../utils/devsync-cli.js";
 

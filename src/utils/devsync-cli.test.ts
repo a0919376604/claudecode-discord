@@ -108,3 +108,49 @@ describe("stripAnsi", () => {
     expect(stripAnsi("hello world")).toBe("hello world");
   });
 });
+
+import os from "node:os";
+import fs from "node:fs";
+import { readServerNames } from "./devsync-cli.js";
+
+describe("readServerNames", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the keys of [servers.*] from config.toml", () => {
+    vi.spyOn(os, "homedir").mockReturnValue("/fake/home");
+    vi.spyOn(fs, "readFileSync").mockImplementation((p) => {
+      if (String(p).endsWith("/.config/devsync/config.toml")) {
+        return [
+          "[defaults]",
+          'remote_base = "/y"',
+          "",
+          "[servers.dl01]",
+          'host = "dl01"',
+          "",
+          "[servers.dl02]",
+          'host = "dl02"',
+        ].join("\n");
+      }
+      throw new Error("unexpected path: " + String(p));
+    });
+    expect(readServerNames()).toEqual(["dl01", "dl02"]);
+  });
+
+  it("returns [] when config.toml is missing", () => {
+    vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    expect(readServerNames()).toEqual([]);
+  });
+
+  it("honors the homeDir override", () => {
+    const calls: string[] = [];
+    vi.spyOn(fs, "readFileSync").mockImplementation((p) => {
+      calls.push(String(p));
+      return "[servers.alpha]\n";
+    });
+    const out = readServerNames("/custom/home");
+    expect(calls[0]).toBe("/custom/home/.config/devsync/config.toml");
+    expect(out).toEqual(["alpha"]);
+  });
+});

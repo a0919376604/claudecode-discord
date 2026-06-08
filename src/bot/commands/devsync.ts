@@ -9,7 +9,11 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { runDevsync, type DevsyncResult } from "../../utils/devsync-cli.js";
+import {
+  runDevsync,
+  readServerNames,
+  type DevsyncResult,
+} from "../../utils/devsync-cli.js";
 import { L } from "../../utils/i18n.js";
 
 const MAX_DISCORD_BODY = 1900; // leave room for code-fence overhead
@@ -99,32 +103,6 @@ export async function execute(
   await interaction.editReply({
     content: L(`Unknown subcommand: ${sub}`, `알 수 없는 하위 명령: ${sub}`),
   });
-}
-
-/**
- * Parse the `[servers.*]` table headers from `~/.config/devsync/config.toml`
- * and return the server names. Tolerates missing file (returns []) and
- * malformed TOML (best-effort substring match — autocomplete is non-critical).
- */
-export function readServerNames(homeDir?: string): string[] {
-  const cfgPath = path.join(
-    homeDir ?? os.homedir(),
-    ".config",
-    "devsync",
-    "config.toml",
-  );
-  let text: string;
-  try {
-    text = fs.readFileSync(cfgPath, "utf-8");
-  } catch {
-    return [];
-  }
-  const names: string[] = [];
-  for (const line of text.split("\n")) {
-    const m = line.trim().match(/^\[servers\.([^\]\s]+)\]$/);
-    if (m) names.push(m[1]);
-  }
-  return names;
 }
 
 /**

@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 export interface DevsyncResult {
   ok: boolean; // exit code === 0
@@ -101,4 +104,35 @@ export async function runDevsync(
       child.stdin?.end();
     }
   });
+}
+
+/**
+ * Parse the `[servers.*]` table headers from `~/.config/devsync/config.toml`
+ * and return the server names. Tolerates missing file (returns [])
+ * and malformed TOML (best-effort substring match — callers treat
+ * this as advisory).
+ *
+ * Moved from src/bot/commands/devsync.ts so non-command modules
+ * (e.g., src/vpn/keepalive.ts) can consume it without a wrong-
+ * direction dependency on commands/.
+ */
+export function readServerNames(homeDir?: string): string[] {
+  const cfgPath = path.join(
+    homeDir ?? os.homedir(),
+    ".config",
+    "devsync",
+    "config.toml",
+  );
+  let text: string;
+  try {
+    text = fs.readFileSync(cfgPath, "utf-8");
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.trim().match(/^\[servers\.([^\]\s]+)\]$/);
+    if (m) names.push(m[1]);
+  }
+  return names;
 }
