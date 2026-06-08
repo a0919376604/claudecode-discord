@@ -45,6 +45,22 @@ const envSchema = z.object({
   // natural ~8h expiry without a tick in between. Hidden knob — not
   // advertised in README.
   CLAUDE_REFRESH_INTERVAL_MIN: z.coerce.number().int().min(1).max(360).default(60),
+  // Master switch for the VPN keep-alive feature. When true, a
+  // periodic timer pings the dev servers from
+  // ~/.config/devsync/config.toml so FortiClient's tunnel does
+  // not drop from idle. Default FALSE — depends on leric-specific
+  // files (~/bin/vpn-status.sh + devsync config); public open-
+  // source users opt in by setting this to "true" in .env.
+  VPN_KEEPALIVE_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // Seconds between keep-alive ticks. Lower bound 10 (no need to
+  // hammer; FortiClient idle timer is minutes-scale). Upper bound
+  // 600 (anything longer risks crossing the idle timeout).
+  // Default 60 — one tick per minute, four pings per tick at
+  // four servers = trivial network cost.
+  VPN_KEEPALIVE_INTERVAL_SEC: z.coerce.number().int().min(10).max(600).default(60),
   // Override the default ~/.claudecode-discord/wakeups path. Test hook —
   // production deployments should leave this unset.
   WAKEUP_DIR_OVERRIDE: z
