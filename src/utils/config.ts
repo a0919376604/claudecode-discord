@@ -35,14 +35,16 @@ const envSchema = z.object({
   // minutes. 30 is conservative enough to absorb retries on slow
   // networks while still avoiding gratuitous refreshes.
   CLAUDE_REFRESH_THRESHOLD_MIN: z.coerce.number().int().positive().default(30),
-  // Minutes between credentials heartbeat ticks. Lower bound 15
-  // because anything shorter than CLAUDE_REFRESH_THRESHOLD_MIN
-  // wastes ticks (refresher would no-op). Upper bound 360 because
-  // anything longer risks idling past the access token's natural
-  // ~8h expiry without a tick in between. Default 60 composes
-  // cleanly with the 30-min threshold: ~7.5h between actual
-  // network refreshes. Hidden knob — not advertised in README.
-  CLAUDE_REFRESH_INTERVAL_MIN: z.coerce.number().int().min(15).max(360).default(60),
+  // Minutes between credentials heartbeat ticks. Default 60 composes
+  // cleanly with the 30-min threshold: ~7.5h between actual network
+  // refreshes. Recommended production floor is ~15 (anything shorter
+  // wastes ticks because the refresher no-ops outside the threshold
+  // window) but the schema accepts 1+ so the smoke-test procedure in
+  // docs/TESTING.md can use INTERVAL=2 with THRESHOLD=1. Upper bound
+  // 360 because anything longer risks idling past the access token's
+  // natural ~8h expiry without a tick in between. Hidden knob — not
+  // advertised in README.
+  CLAUDE_REFRESH_INTERVAL_MIN: z.coerce.number().int().min(1).max(360).default(60),
   // Override the default ~/.claudecode-discord/wakeups path. Test hook —
   // production deployments should leave this unset.
   WAKEUP_DIR_OVERRIDE: z
