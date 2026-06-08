@@ -5,6 +5,10 @@ import { loadConfig } from "./utils/config.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 import { ensureFreshCredentials } from "./claude/credentials-refresher.js";
+import {
+  startCredentialsHeartbeat,
+  stopCredentialsHeartbeat,
+} from "./claude/credentials-heartbeat.js";
 import { startWakeupWatcher, stopWakeupWatcher } from "./wakeup/bootstrap.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
@@ -46,11 +50,13 @@ async function main() {
   // Clean up lock file on exit
   process.on("exit", releaseLock);
   process.on("SIGINT", () => {
+    stopCredentialsHeartbeat();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
   });
   process.on("SIGTERM", () => {
+    stopCredentialsHeartbeat();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
@@ -81,7 +87,9 @@ async function main() {
   console.log("Database initialized");
 
   // Start Discord bot
-  await startBot();
+  const client = await startBot();
+  startCredentialsHeartbeat(client);
+  console.log("Credentials heartbeat started");
   await startWakeupWatcher();
   console.log("Wake-up watcher started");
   console.log("Bot is running!");
