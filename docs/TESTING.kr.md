@@ -178,3 +178,79 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
 
 봇을 정상 운영으로 돌리기 전에 `.env`를 기본값으로 복구합니다
 (테스트 override 제거).
+
+## VPN Keep-Alive (macOS 전용, opt-in)
+
+봇은 `~/.config/devsync/config.toml`의 dev 서버에 주기적으로 ping을 보내
+FortiClient VPN 터널이 유휴 상태로 식지 않게 유지합니다. VPN 상태 감지가
+터널이 내려갔다고 보고하면 `ALLOWED_USER_IDS`의 첫 번째 항목에 Discord DM을
+보냅니다. 이 기능은 기본적으로 OFF입니다. `.env`에
+`VPN_KEEPALIVE_ENABLED=true`를 설정해야 활성화됩니다.
+
+이 smoke test의 전제 조건:
+- macOS
+- FortiClient VPN 설치됨
+- `~/bin/vpn-status.sh` 존재(leric 스타일 detector)
+- `~/.config/devsync/config.toml`에 최소 하나의 `[servers.*]` 존재
+- `ALLOWED_USER_IDS[0]`가 봇이 DM을 보낼 수 있는 사용자로 설정된 Discord 봇
+
+### 정상 상태 ping
+
+1. `.env`에 빠른 tick override를 설정합니다:
+   ```
+   VPN_KEEPALIVE_ENABLED=true
+   VPN_KEEPALIVE_INTERVAL_SEC=15
+   ```
+2. VPN을 연결합니다(`/vpn connect`, 또는 FortiClient 클릭).
+3. 다른 터미널에서 tunnel interface의 ICMP를 관찰합니다(`utun4`는
+   `vpn-status.sh`가 보고하는 값으로 바꿉니다):
+   ```bash
+   sudo tcpdump -i utun4 icmp
+   ```
+4. `npm run dev`를 실행합니다. 약 15초 안에 tcpdump 출력에서 설정된 서버마다
+   ICMP echo request가 하나씩 보여야 하고, 봇 로그에는 다음이 보여야 합니다:
+   ```
+   [vpn-keepalive] VPN up on utun4 (10.x.x.x).
+   ```
+5. 매 interval마다 반복됩니다. Discord DM은 오면 안 됩니다.
+
+### 끊김 알림
+
+1. VPN을 끊습니다(`/vpn disconnect` 또는 FortiClient 버튼 클릭).
+2. `VPN_KEEPALIVE_INTERVAL_SEC`초 안에 봇 소유자(`ALLOWED_USER_IDS`의 첫 번째
+   항목)가 세 언어(EN, KR, zh-TW)가 모두 포함된 Discord DM을 받아야 합니다.
+   봇 로그에는 다음이 보여야 합니다:
+   ```
+   [vpn-keepalive] Sent VPN-down DM to first allowed user.
+   ```
+3. 한 tick 더 기다립니다. 두 번째 DM은 오면 안 됩니다. 봇 로그에는 다음이
+   보여야 합니다:
+   ```
+   [vpn-keepalive] VPN still down, no DM.
+   ```
+4. VPN을 다시 연결합니다. 한 tick 안에 봇 로그에는 다음이 보여야 합니다:
+   ```
+   [vpn-keepalive] VPN recovered.
+   [vpn-keepalive] VPN up on utun4 (10.x.x.x).
+   ```
+5. 다시 VPN을 끊습니다. 새 DM이 도착해야 합니다(복구로 `notifiedDown`이
+   리셋됨).
+
+### Script missing / opt-in 오류
+
+1. 설정 오류를 시뮬레이션하기 위해 스크립트 이름을 임시로 바꿉니다:
+   ```bash
+   mv ~/bin/vpn-status.sh ~/bin/vpn-status.sh.disabled
+   ```
+2. 봇을 재시작합니다. `VPN_KEEPALIVE_INTERVAL_SEC`초 안에 `script_missing`
+   variant의 DM이 도착해야 합니다(`~/bin/vpn-status.sh`와
+   `VPN_KEEPALIVE_ENABLED=false`를 명시적으로 언급).
+3. 스크립트를 복구합니다:
+   ```bash
+   mv ~/bin/vpn-status.sh.disabled ~/bin/vpn-status.sh
+   ```
+
+### 정리
+
+봇을 정상 운영으로 돌리기 전에 `.env`를 기본값으로 복구합니다
+(테스트 override 제거 또는 `VPN_KEEPALIVE_ENABLED=false` 설정).

@@ -183,3 +183,83 @@ All commands below are tested on macOS. They use `node -e 'console.log(Date.now(
 
 Restore `.env` to defaults (remove the test overrides) before
 returning the bot to normal use.
+
+## VPN Keep-Alive (macOS only, opt-in)
+
+The bot periodically pings the dev servers from
+`~/.config/devsync/config.toml` to keep the FortiClient VPN tunnel
+hot, and DMs the first `ALLOWED_USER_IDS` entry if the VPN status
+detection reports the tunnel is down. The feature is OFF by
+default; enable with `VPN_KEEPALIVE_ENABLED=true` in `.env`.
+
+Prerequisites for this smoke test:
+- macOS
+- FortiClient VPN installed
+- `~/bin/vpn-status.sh` present (the leric-style detector)
+- `~/.config/devsync/config.toml` with at least one `[servers.*]`
+- A Discord bot with `ALLOWED_USER_IDS[0]` set to a user whose
+  DMs the bot can reach
+
+### Steady-state pinging
+
+1. Set fast-tick overrides in `.env`:
+   ```
+   VPN_KEEPALIVE_ENABLED=true
+   VPN_KEEPALIVE_INTERVAL_SEC=15
+   ```
+2. Connect VPN (`/vpn connect`, or click FortiClient).
+3. In another terminal, sniff ICMP on the tunnel interface (replace
+   `utun4` with whatever `vpn-status.sh` reports):
+   ```bash
+   sudo tcpdump -i utun4 icmp
+   ```
+4. Run `npm run dev`. Within ~15 seconds you should see one ICMP
+   echo request per configured server in the tcpdump output, and
+   in the bot logs:
+   ```
+   [vpn-keepalive] VPN up on utun4 (10.x.x.x).
+   ```
+5. Repeat every interval. No Discord DM arrives.
+
+### Drop notification
+
+1. Disconnect VPN (`/vpn disconnect` or click the FortiClient
+   button).
+2. Within `VPN_KEEPALIVE_INTERVAL_SEC` seconds, the bot owner
+   (first entry in `ALLOWED_USER_IDS`) should receive a Discord DM
+   containing all three languages (EN, KR, zh-TW). Bot logs show:
+   ```
+   [vpn-keepalive] Sent VPN-down DM to first allowed user.
+   ```
+3. Wait another tick. NO second DM. Bot logs show:
+   ```
+   [vpn-keepalive] VPN still down, no DM.
+   ```
+4. Reconnect VPN. Within one tick, bot logs show:
+   ```
+   [vpn-keepalive] VPN recovered.
+   [vpn-keepalive] VPN up on utun4 (10.x.x.x).
+   ```
+5. Disconnect again. A NEW DM should arrive (the recovery reset
+   `notifiedDown`).
+
+### Script missing / opt-in error
+
+1. Temporarily rename the script to simulate misconfiguration:
+   ```bash
+   mv ~/bin/vpn-status.sh ~/bin/vpn-status.sh.disabled
+   ```
+2. Restart the bot. Within `VPN_KEEPALIVE_INTERVAL_SEC` seconds, a
+   DM arrives with the `script_missing` variant (explicitly
+   mentioning `~/bin/vpn-status.sh` and
+   `VPN_KEEPALIVE_ENABLED=false`).
+3. Restore the script:
+   ```bash
+   mv ~/bin/vpn-status.sh.disabled ~/bin/vpn-status.sh
+   ```
+
+### Cleanup
+
+Restore `.env` to defaults (remove the test overrides or set
+`VPN_KEEPALIVE_ENABLED=false`) before returning the bot to normal
+use.
