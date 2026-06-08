@@ -43,20 +43,19 @@ describe("ensureFreshCredentials", () => {
 
   it("no-ops on non-darwin platform", async () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    // mockResolvedValue is a safety net — if the implementation regresses
-    // and DOES call fetch, the spy intercepts so we don't make a real HTTP
-    // request from the test runner. The assertion still fails.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ status: "skipped" });
   });
 
   it("no-ops when CLAUDE_AUTO_REFRESH is false", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
     mockConfig.CLAUDE_AUTO_REFRESH = false;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ status: "skipped" });
   });
 
   it("calls `security find-generic-password` to read the Keychain entry", async () => {
@@ -82,8 +81,9 @@ describe("ensureFreshCredentials", () => {
     });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ status: "skipped" });
     warnSpy.mockRestore();
   });
 
@@ -92,8 +92,9 @@ describe("ensureFreshCredentials", () => {
     vi.mocked(execFileSync).mockReturnValue("not json at all\n" as never);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ status: "skipped" });
     warnSpy.mockRestore();
   });
 
@@ -115,8 +116,9 @@ describe("ensureFreshCredentials", () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
     mockKeychainCreds({ expiresAt: Date.now() + 2 * 60 * 60 * 1000 });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ status: "skipped" });
   });
 
   it("calls fetch when token expires within threshold", async () => {
@@ -129,8 +131,12 @@ describe("ensureFreshCredentials", () => {
         expires_in: 28800,
       })),
     );
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).toHaveBeenCalled();
+    expect(outcome.status).toBe("refreshed");
+    if (outcome.status === "refreshed") {
+      expect(outcome.expiresAt).toBeGreaterThan(Date.now());
+    }
   });
 
   it("POSTs the correct body to the refresh endpoint", async () => {
@@ -178,12 +184,13 @@ describe("ensureFreshCredentials", () => {
       new Response(JSON.stringify({ error: "invalid_grant" }), { status: 401 }),
     );
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     // Only the READ exec call should have happened — no write.
     const writeCalls = vi.mocked(execFileSync).mock.calls.filter(
       (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
     );
     expect(writeCalls).toHaveLength(0);
+    expect(outcome).toEqual({ status: "revoked" });
     warnSpy.mockRestore();
   });
 
@@ -194,8 +201,9 @@ describe("ensureFreshCredentials", () => {
       .mockResolvedValueOnce(new Response("", { status: 503 }))
       .mockResolvedValueOnce(new Response("", { status: 503 }));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(outcome).toEqual({ status: "transient_error" });
     warnSpy.mockRestore();
   });
 
@@ -210,7 +218,8 @@ describe("ensureFreshCredentials", () => {
       })),
     );
 
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
+    expect(outcome.status).toBe("refreshed");
 
     const writeCall = vi.mocked(execFileSync).mock.calls.find(
       (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
@@ -248,7 +257,8 @@ describe("ensureFreshCredentials", () => {
       })),
     );
 
-    await ensureFreshCredentials();
+    const outcome = await ensureFreshCredentials();
+    expect(outcome.status).toBe("refreshed");
 
     const writeCall = vi.mocked(execFileSync).mock.calls.find(
       (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
@@ -269,7 +279,7 @@ describe("ensureFreshCredentials", () => {
       })),
     );
 
-    await Promise.all([
+    const outcomes = await Promise.all([
       ensureFreshCredentials(),
       ensureFreshCredentials(),
       ensureFreshCredentials(),
@@ -282,5 +292,7 @@ describe("ensureFreshCredentials", () => {
       (call) => Array.isArray(call[1]) && call[1].includes("add-generic-password"),
     );
     expect(writeCalls).toHaveLength(1);
+    // All 5 callers should see the same outcome
+    for (const o of outcomes) expect(o.status).toBe("refreshed");
   });
 });

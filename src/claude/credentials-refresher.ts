@@ -24,11 +24,21 @@ const ANTHROPIC_BETA = "oauth-2025-04-20";
 // our refresh requests are recognizable in Anthropic-side logs.
 const USER_AGENT = "claudecode-discord/1.3.0";
 
+export type RefreshOutcome =
+  | { status: "skipped" }
+  | { status: "refreshed"; expiresAt: number }
+  | { status: "revoked" }
+  | { status: "transient_error" };
+
 interface RefreshResponse {
   access_token: string;
   refresh_token?: string;
   expires_in: number;
 }
+
+type RefreshEndpointResult =
+  | { ok: true; response: RefreshResponse }
+  | { ok: false; kind: "revoked" | "transient" };
 
 interface KeychainCreds {
   accessToken: string;
@@ -109,7 +119,7 @@ function readKeychain(): KeychainRecord | null {
   };
 }
 
-let inFlight: Promise<void> | null = null;
+let inFlight: Promise<RefreshOutcome> | null = null;
 
 /**
  * Ensure Keychain holds a non-expired Claude Code OAuth access token
@@ -117,22 +127,23 @@ let inFlight: Promise<void> | null = null;
  * (no HTTP) when the token is still fresh, self-deduplicating when
  * called concurrently.
  *
- * Never throws. Failures log and return — callers must not branch on
- * the outcome. If refresh fails, the existing auth-error path in
- * session-manager surfaces the problem to the user via Discord.
+ * Returns a discriminated outcome so callers (heartbeat) can act on
+ * "revoked" vs "transient_error". Never throws — unexpected errors
+ * are mapped to {status:"transient_error"}.
  *
- * macOS-only for v1; silently no-ops on other platforms.
+ * macOS-only for v1; returns {status:"skipped"} on other platforms.
  */
-export async function ensureFreshCredentials(): Promise<void> {
+export async function ensureFreshCredentials(): Promise<RefreshOutcome> {
   if (inFlight) return inFlight;
-  inFlight = (async () => {
+  inFlight = (async (): Promise<RefreshOutcome> => {
     try {
-      await doRefresh();
+      return await doRefresh();
     } catch (e) {
       console.warn(
         "[credentials-refresher] Unexpected error:",
         e instanceof Error ? e.message : e,
       );
+      return { status: "transient_error" };
     } finally {
       inFlight = null;
     }
@@ -148,7 +159,7 @@ function needsRefresh(
   return creds.expiresAt - now < thresholdMin * 60_000;
 }
 
-async function callRefreshEndpoint(refreshToken: string): Promise<RefreshResponse | null> {
+async function callRefreshEndpoint(refreshToken: string): Promise<RefreshEndpointResult> {
   for (let attempt = 0; attempt < 2; attempt++) {
     let res: Response;
     try {
@@ -175,14 +186,14 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
         await new Promise((r) => setTimeout(r, 500));
         continue;
       }
-      return null;
+      return { ok: false, kind: "transient" };
     }
 
     if (res.status === 401 || res.status === 400) {
       console.warn(
         `[credentials-refresher] Refresh rejected (${res.status}); refresh token likely revoked or expired. Discord will prompt user to re-login on next auth error.`,
       );
-      return null;
+      return { ok: false, kind: "revoked" };
     }
     if (res.status >= 500) {
       if (attempt === 0) {
@@ -190,11 +201,11 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
         continue;
       }
       console.warn(`[credentials-refresher] Refresh endpoint ${res.status} after retry; giving up.`);
-      return null;
+      return { ok: false, kind: "transient" };
     }
     if (!res.ok) {
       console.warn(`[credentials-refresher] Unexpected status ${res.status} from refresh endpoint.`);
-      return null;
+      return { ok: false, kind: "transient" };
     }
 
     let body: unknown;
@@ -202,20 +213,23 @@ async function callRefreshEndpoint(refreshToken: string): Promise<RefreshRespons
       body = await res.json();
     } catch {
       console.warn("[credentials-refresher] Refresh response was not valid JSON.");
-      return null;
+      return { ok: false, kind: "transient" };
     }
     const b = body as Partial<RefreshResponse>;
     if (typeof b.access_token !== "string" || typeof b.expires_in !== "number") {
       console.warn("[credentials-refresher] Refresh response missing required fields.");
-      return null;
+      return { ok: false, kind: "transient" };
     }
     return {
-      access_token: b.access_token,
-      refresh_token: typeof b.refresh_token === "string" ? b.refresh_token : undefined,
-      expires_in: b.expires_in,
+      ok: true,
+      response: {
+        access_token: b.access_token,
+        refresh_token: typeof b.refresh_token === "string" ? b.refresh_token : undefined,
+        expires_in: b.expires_in,
+      },
     };
   }
-  return null;
+  return { ok: false, kind: "transient" };
 }
 
 function writeKeychain(creds: KeychainCreds, account: string): boolean {
@@ -242,28 +256,35 @@ function writeKeychain(creds: KeychainCreds, account: string): boolean {
   }
 }
 
-async function doRefresh(): Promise<void> {
+async function doRefresh(): Promise<RefreshOutcome> {
   const cfg = getConfig();
-  if (!cfg.CLAUDE_AUTO_REFRESH) return;
-  if (process.platform !== "darwin") return;
+  if (!cfg.CLAUDE_AUTO_REFRESH) return { status: "skipped" };
+  if (process.platform !== "darwin") return { status: "skipped" };
 
   const keychain = readKeychain();
-  if (!keychain) return;
+  if (!keychain) return { status: "skipped" };
 
-  if (!needsRefresh(keychain.creds, cfg.CLAUDE_REFRESH_THRESHOLD_MIN)) return;
+  if (!needsRefresh(keychain.creds, cfg.CLAUDE_REFRESH_THRESHOLD_MIN)) {
+    return { status: "skipped" };
+  }
 
-  const fresh = await callRefreshEndpoint(keychain.creds.refreshToken);
-  if (!fresh) return;
+  const result = await callRefreshEndpoint(keychain.creds.refreshToken);
+  if (!result.ok) {
+    return { status: result.kind === "revoked" ? "revoked" : "transient_error" };
+  }
 
   const merged: KeychainCreds = {
     ...keychain.creds,
-    accessToken: fresh.access_token,
-    refreshToken: fresh.refresh_token ?? keychain.creds.refreshToken,
-    expiresAt: Date.now() + fresh.expires_in * 1000,
+    accessToken: result.response.access_token,
+    refreshToken: result.response.refresh_token ?? keychain.creds.refreshToken,
+    expiresAt: Date.now() + result.response.expires_in * 1000,
   };
 
-  if (writeKeychain(merged, keychain.account)) {
-    const hoursLeft = Math.round((merged.expiresAt - Date.now()) / 3_600_000);
-    console.log(`[credentials-refresher] Refreshed access token (valid ~${hoursLeft}h).`);
+  if (!writeKeychain(merged, keychain.account)) {
+    return { status: "transient_error" };
   }
+
+  const hoursLeft = Math.round((merged.expiresAt - Date.now()) / 3_600_000);
+  console.log(`[credentials-refresher] Refreshed access token (valid ~${hoursLeft}h).`);
+  return { status: "refreshed", expiresAt: merged.expiresAt };
 }
