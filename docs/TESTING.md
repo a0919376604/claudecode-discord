@@ -110,3 +110,76 @@ After tampering `expiresAt` again as in step 2, the log should NOT
 contain the refresh line, and sending a Discord message should
 eventually surface the existing "please run `claude login`" prompt
 via the bot's auth-error detection.
+
+## Credentials Heartbeat (macOS only)
+
+The bot periodically refreshes the Claude Code OAuth token in the
+background so the user is not forced to re-login during idle
+periods. To verify the heartbeat end-to-end:
+
+All commands below are tested on macOS. They use `node -e 'console.log(Date.now())'` for millisecond timestamps because BSD `date` does not support `%3N`. The Keychain write captures the modified JSON into a shell variable first, because `security add-generic-password -w` takes the password as an argument (not stdin).
+
+### Steady-state refresh
+
+1. Confirm you have a valid Keychain entry and see when it expires:
+   ```bash
+   security find-generic-password -s "Claude Code-credentials" -w \
+     | node -e "let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{const o=JSON.parse(d).claudeAiOauth; console.log('expires in', ((o.expiresAt - Date.now()) / 3_600_000).toFixed(2), 'h')})"
+   ```
+2. Set fast-tick overrides in `.env`:
+   ```
+   CLAUDE_REFRESH_INTERVAL_MIN=2
+   CLAUDE_REFRESH_THRESHOLD_MIN=1
+   ```
+3. Tamper `expiresAt` to 90 seconds from now:
+   ```bash
+   NEAR_FUTURE_MS=$(node -e 'console.log(Date.now() + 90_000)')
+   NEW_PAYLOAD=$(
+     security find-generic-password -s "Claude Code-credentials" -w \
+       | jq -c --argjson e "$NEAR_FUTURE_MS" '.claudeAiOauth.expiresAt = $e'
+   )
+   security add-generic-password -s "Claude Code-credentials" \
+     -a "$(whoami)" -w "$NEW_PAYLOAD" -U
+   ```
+4. Run `npm run dev`. Within ~2 minutes you should see in the bot logs:
+   ```
+   [credentials-refresher] Refreshed access token (valid ~8h).
+   ```
+5. Confirm the Keychain now holds a fresh expiry (~8h out) using the
+   same `node -e` one-liner from step 1.
+
+### Revoke notification
+
+1. Tamper the `refreshToken` to a known-bad value AND push `expiresAt`
+   near-future so the heartbeat tries (and fails) to refresh next tick:
+   ```bash
+   NEAR_FUTURE_MS=$(node -e 'console.log(Date.now() + 90_000)')
+   NEW_PAYLOAD=$(
+     security find-generic-password -s "Claude Code-credentials" -w \
+       | jq -c --argjson e "$NEAR_FUTURE_MS" '
+           .claudeAiOauth.expiresAt = $e
+           | .claudeAiOauth.refreshToken = "sk-ant-ort01-INVALID"
+         '
+   )
+   security add-generic-password -s "Claude Code-credentials" \
+     -a "$(whoami)" -w "$NEW_PAYLOAD" -U
+   ```
+2. Run `npm run dev`. Within `CLAUDE_REFRESH_INTERVAL_MIN` minutes
+   the bot owner (first entry in `ALLOWED_USER_IDS`) should receive
+   a Discord DM containing the bilingual EN+KR re-login instructions.
+   Bot logs should show:
+   ```
+   [credentials-refresher] Refresh rejected (401); refresh token likely revoked or expired. ...
+   [heartbeat] Sent revoke notification DM to first allowed user.
+   ```
+3. Wait another tick — no second DM should arrive. Bot logs continue
+   to show the 401 from the refresher, but the heartbeat is now silent.
+4. Restore valid creds by running `claude login` on the host. On the
+   next heartbeat tick after re-auth (or the next user message,
+   whichever comes first), `notifiedRevoked` resets and the DM
+   capability is restored.
+
+### Cleanup
+
+Restore `.env` to defaults (remove the test overrides) before
+returning the bot to normal use.

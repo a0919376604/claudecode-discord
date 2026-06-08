@@ -107,3 +107,74 @@ npx tsc --noEmit      # 타입 체크만 수행 (빌드 출력 없음)
 2단계와 같이 `expiresAt`을 위변조해도 갱신 로그가 나오지 않으며, Discord
 메시지를 보내면 봇의 기존 인증 오류 감지 로직이 "claude login 다시 실행해
 주세요" 안내를 띄워야 합니다.
+
+## 자격 증명 하트비트 (macOS 전용)
+
+봇은 백그라운드에서 Claude Code OAuth 토큰을 주기적으로 갱신하여,
+유휴 시간이 길어져도 사용자가 다시 로그인하지 않아도 되게 합니다.
+하트비트를 end-to-end로 확인하려면 다음 절차를 따릅니다.
+
+아래 명령은 모두 macOS에서 테스트되었습니다. BSD `date`는 `%3N`을 지원하지 않으므로 밀리초 타임스탬프에는 `node -e 'console.log(Date.now())'`를 사용합니다. Keychain 쓰기는 수정된 JSON을 먼저 셸 변수에 담습니다. `security add-generic-password -w`는 비밀번호를 stdin이 아니라 인자로 받기 때문입니다.
+
+### 정상 상태 갱신
+
+1. 유효한 Keychain 항목이 있는지 확인하고 만료 시각을 봅니다:
+   ```bash
+   security find-generic-password -s "Claude Code-credentials" -w \
+     | node -e "let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{const o=JSON.parse(d).claudeAiOauth; console.log('expires in', ((o.expiresAt - Date.now()) / 3_600_000).toFixed(2), 'h')})"
+   ```
+2. `.env`에 빠른 tick override를 설정합니다:
+   ```
+   CLAUDE_REFRESH_INTERVAL_MIN=2
+   CLAUDE_REFRESH_THRESHOLD_MIN=1
+   ```
+3. `expiresAt`을 지금부터 90초 뒤로 위변조합니다:
+   ```bash
+   NEAR_FUTURE_MS=$(node -e 'console.log(Date.now() + 90_000)')
+   NEW_PAYLOAD=$(
+     security find-generic-password -s "Claude Code-credentials" -w \
+       | jq -c --argjson e "$NEAR_FUTURE_MS" '.claudeAiOauth.expiresAt = $e'
+   )
+   security add-generic-password -s "Claude Code-credentials" \
+     -a "$(whoami)" -w "$NEW_PAYLOAD" -U
+   ```
+4. `npm run dev`를 실행합니다. 약 2분 안에 봇 로그에 다음 줄이 보여야 합니다:
+   ```
+   [credentials-refresher] Refreshed access token (valid ~8h).
+   ```
+5. 1단계의 같은 `node -e` one-liner로 Keychain에 새 만료 시각(약 8시간 뒤)이
+   들어갔는지 확인합니다.
+
+### 취소 알림
+
+1. `refreshToken`을 알려진 잘못된 값으로 위변조하고, 하트비트가 다음 tick에서
+   갱신을 시도하도록 `expiresAt`도 가까운 미래로 밀어 둡니다:
+   ```bash
+   NEAR_FUTURE_MS=$(node -e 'console.log(Date.now() + 90_000)')
+   NEW_PAYLOAD=$(
+     security find-generic-password -s "Claude Code-credentials" -w \
+       | jq -c --argjson e "$NEAR_FUTURE_MS" '
+           .claudeAiOauth.expiresAt = $e
+           | .claudeAiOauth.refreshToken = "sk-ant-ort01-INVALID"
+         '
+   )
+   security add-generic-password -s "Claude Code-credentials" \
+     -a "$(whoami)" -w "$NEW_PAYLOAD" -U
+   ```
+2. `npm run dev`를 실행합니다. `CLAUDE_REFRESH_INTERVAL_MIN`분 안에
+   봇 소유자(`ALLOWED_USER_IDS`의 첫 번째 항목)가 bilingual EN+KR 재로그인
+   안내가 포함된 Discord DM을 받아야 합니다. 봇 로그에는 다음이 보여야 합니다:
+   ```
+   [credentials-refresher] Refresh rejected (401); refresh token likely revoked or expired. ...
+   [heartbeat] Sent revoke notification DM to first allowed user.
+   ```
+3. 한 tick 더 기다립니다. 두 번째 DM은 오면 안 됩니다. 봇 로그에는 refresher의
+   401 로그가 계속 보일 수 있지만, 하트비트는 이제 조용해야 합니다.
+4. 호스트에서 `claude login`을 실행해 유효한 자격 증명을 복구합니다. 재인증 후
+   다음 하트비트 tick(또는 다음 사용자 메시지, 둘 중 먼저 오는 시점)에
+   `notifiedRevoked`가 리셋되고 DM 기능이 복구됩니다.
+
+### 정리
+
+봇을 정상 운영으로 돌리기 전에 `.env`를 기본값으로 복구합니다
+(테스트 override 제거).
