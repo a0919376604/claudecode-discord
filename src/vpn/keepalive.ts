@@ -4,6 +4,10 @@ import os from "node:os";
 import type { Client } from "discord.js";
 import { getConfig } from "../utils/config.js";
 
+export type VpnStatus =
+  | { connected: true; iface: string; ip: string }
+  | { connected: false; reason: "down" | "script_missing" | "script_error" };
+
 let timer: NodeJS.Timeout | null = null;
 
 /**
@@ -37,19 +41,85 @@ export function stopVpnKeepalive(): void {
 }
 
 async function tick(_client: Client): Promise<void> {
-  // Body filled out in Tasks 4-5. For now, just spawn vpn-status.sh
-  // so the lifecycle tests can observe the call (proves the timer
-  // is wired correctly).
-  await checkVpnStatusStub();
+  const status = await checkVpnStatus();
+  // Task 5: act on `status`. For now, just log so cadence tests have
+  // observable side-effects.
+  if (!status.connected) {
+    console.log(`[vpn-keepalive] VPN ${status.reason}.`);
+  } else {
+    console.log(`[vpn-keepalive] VPN up on ${status.iface} (${status.ip}).`);
+  }
 }
 
-async function checkVpnStatusStub(): Promise<void> {
+const VPN_STATUS_TIMEOUT_MS = 3000;
+
+/**
+ * Spawn ~/bin/vpn-status.sh and parse its stdout. Returns a
+ * discriminated VpnStatus. Never throws — every failure path
+ * is captured as `connected: false`.
+ *
+ * Exported for unit testing; not used by callers outside this module.
+ */
+export function checkVpnStatus(): Promise<VpnStatus> {
   const scriptPath = path.join(os.homedir(), "bin", "vpn-status.sh");
-  return new Promise<void>((resolve) => {
-    const proc = spawn(scriptPath, [], {
-      stdio: ["ignore", "pipe", "pipe"],
+  return new Promise<VpnStatus>((resolve) => {
+    let stdout = "";
+    let settled = false;
+    const settle = (s: VpnStatus) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(s);
+    };
+
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(scriptPath, [], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      settle({ connected: false, reason: "script_missing" });
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      settle({ connected: false, reason: "script_error" });
+    }, VPN_STATUS_TIMEOUT_MS);
+
+    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") {
+        settle({ connected: false, reason: "script_missing" });
+      } else {
+        settle({ connected: false, reason: "script_error" });
+      }
     });
-    proc.on("close", () => resolve());
-    proc.on("error", () => resolve());
+
+    proc.on("close", (code) => {
+      if ((code ?? 0) !== 0) {
+        settle({ connected: false, reason: "script_error" });
+        return;
+      }
+      const trimmed = stdout.trimStart();
+      if (trimmed.startsWith("✅")) {
+        // Example: "✅ FortiClient VPN connected — utun4 (10.50.10.42)\n..."
+        const m = trimmed.match(/^✅[^—]*—\s*(\S+)\s*\(([^)]+)\)/);
+        if (m) {
+          settle({ connected: true, iface: m[1], ip: m[2] });
+          return;
+        }
+        // Connected per the icon but we couldn't parse iface/ip —
+        // treat as script_error so the caller surfaces a problem.
+        settle({ connected: false, reason: "script_error" });
+        return;
+      }
+      if (trimmed.startsWith("❌")) {
+        settle({ connected: false, reason: "down" });
+        return;
+      }
+      settle({ connected: false, reason: "script_error" });
+    });
   });
 }

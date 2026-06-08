@@ -17,6 +17,7 @@ vi.mock("node:child_process");
 import {
   startVpnKeepalive,
   stopVpnKeepalive,
+  checkVpnStatus,
 } from "./keepalive.js";
 
 // Minimal Discord Client stub. Heartbeat only touches users.fetch().send().
@@ -120,5 +121,80 @@ describe("vpn-keepalive: lifecycle + no-op guards", () => {
 
   it("stop() is safe when no timer is running", () => {
     expect(() => stopVpnKeepalive()).not.toThrow();
+  });
+});
+
+describe("vpn-keepalive: checkVpnStatus", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("returns connected=true when stdout starts with ✅", async () => {
+    vi.spyOn(child_process, "spawn").mockReturnValue(
+      makeFakeProcess({
+        stdout: "✅ FortiClient VPN connected — utun4 (10.50.10.42)\n",
+        exitCode: 0,
+      }) as any,
+    );
+    const r = await checkVpnStatus();
+    expect(r.connected).toBe(true);
+    if (r.connected) {
+      expect(r.iface).toBe("utun4");
+      expect(r.ip).toBe("10.50.10.42");
+    }
+  });
+
+  it("returns connected=false reason='down' when stdout starts with ❌", async () => {
+    vi.spyOn(child_process, "spawn").mockReturnValue(
+      makeFakeProcess({
+        stdout: "❌ FortiClient VPN not connected\n",
+        exitCode: 0,
+      }) as any,
+    );
+    const r = await checkVpnStatus();
+    expect(r).toEqual({ connected: false, reason: "down" });
+  });
+
+  it("returns reason='script_missing' on ENOENT", async () => {
+    const err = new Error("spawn ENOENT") as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    vi.spyOn(child_process, "spawn").mockReturnValue(
+      makeFakeProcess({ error: err }) as any,
+    );
+    const r = await checkVpnStatus();
+    expect(r).toEqual({ connected: false, reason: "script_missing" });
+  });
+
+  it("returns reason='script_error' on non-zero exit", async () => {
+    vi.spyOn(child_process, "spawn").mockReturnValue(
+      makeFakeProcess({ stderr: "broken", exitCode: 2 }) as any,
+    );
+    const r = await checkVpnStatus();
+    expect(r).toEqual({ connected: false, reason: "script_error" });
+  });
+
+  it("returns reason='script_error' on unparseable stdout", async () => {
+    vi.spyOn(child_process, "spawn").mockReturnValue(
+      makeFakeProcess({
+        stdout: "lol no leading icon here\n",
+        exitCode: 0,
+      }) as any,
+    );
+    const r = await checkVpnStatus();
+    expect(r).toEqual({ connected: false, reason: "script_error" });
+  });
+
+  it("returns reason='script_error' on timeout and SIGKILLs", async () => {
+    const fake = makeFakeProcess({ delayMs: 10_000, exitCode: 0 });
+    vi.spyOn(child_process, "spawn").mockReturnValue(fake as any);
+    const promise = checkVpnStatus();
+    await vi.advanceTimersByTimeAsync(3500); // exceeds the 3s timeout
+    const r = await promise;
+    expect(r).toEqual({ connected: false, reason: "script_error" });
+    expect(fake.kill).toHaveBeenCalledWith("SIGKILL");
   });
 });
