@@ -41,13 +41,19 @@ function truncateDescription(desc: string): string {
 }
 
 /**
- * Minimal frontmatter parser. Extracts `description:` and `argument-hint:`.
- * Returns null if no frontmatter delimiters or required `description:` is
- * absent. Handles quoted values (single or double) and unquoted values.
+ * Minimal frontmatter parser. Extracts `description:`, `argument-hint:`, and
+ * `discord-visible:`. Returns null if no frontmatter delimiters or required
+ * `description:` is absent. Handles quoted values (single or double) and
+ * unquoted values.
+ *
+ * `discord-visible: false` is a sentinel that lets a slash command exist for
+ * the Claude CLI (terminal) but be hidden from Discord registration. Useful
+ * for interactive or long-running commands that don't fit Discord's UX
+ * (brainstorming, executor selection, multi-step bootstrap).
  */
 function parseFrontmatter(
   text: string,
-): { description: string; argumentHint?: string } | null {
+): { description: string; argumentHint?: string; discordVisible: boolean } | null {
   if (!text.startsWith("---")) return null;
   const end = text.indexOf("\n---", 3);
   if (end < 0) return null;
@@ -57,6 +63,7 @@ function parseFrontmatter(
 
   let description: string | undefined;
   let argumentHint: string | undefined;
+  let discordVisible = true; // default: visible to Discord
 
   for (const line of lines) {
     const colon = line.indexOf(":");
@@ -73,10 +80,14 @@ function parseFrontmatter(
 
     if (key === "description") description = value;
     else if (key === "argument-hint") argumentHint = value;
+    else if (key === "discord-visible") {
+      const v = value.toLowerCase();
+      if (v === "false" || v === "no" || v === "0") discordVisible = false;
+    }
   }
 
   if (!description) return null;
-  return { description, argumentHint };
+  return { description, argumentHint, discordVisible };
 }
 
 /**
@@ -136,6 +147,12 @@ function scanCommandsDir(
     const fm = parseFrontmatter(body);
     if (!fm) {
       warnings.push(`${scopeLabel}/${file}: missing or malformed frontmatter; skipping`);
+      continue;
+    }
+
+    if (!fm.discordVisible) {
+      // Honor `discord-visible: false` — command still works via Claude CLI
+      // but is intentionally not registered as a Discord slash command.
       continue;
     }
 

@@ -247,6 +247,28 @@ describe("scanUserCommands", () => {
     expect(result.commands).toEqual([]);
     expect(result.warnings.some((w) => w.includes("Bad_Name"))).toBe(true);
   });
+
+  it("hides commands with discord-visible: false", async () => {
+    const userCmdDir = path.join(tmpHome, ".claude", "commands");
+    fs.mkdirSync(userCmdDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userCmdDir, "ship-visible.md"),
+      `---\ndescription: Visible cmd.\ndiscord-visible: true\n---\nbody`,
+    );
+    fs.writeFileSync(
+      path.join(userCmdDir, "ship-hidden.md"),
+      `---\ndescription: Hidden cmd.\ndiscord-visible: false\n---\nbody`,
+    );
+    fs.writeFileSync(
+      path.join(userCmdDir, "ship-default.md"),
+      `---\ndescription: Default cmd (no key).\n---\nbody`,
+    );
+
+    const result = await scanUserCommands({ homeDir: tmpHome });
+    const names = result.commands.map((c) => c.commandName).sort();
+    expect(names).toEqual(["ship-default", "ship-visible"]);
+    expect(names).not.toContain("ship-hidden");
+  });
 });
 
 describe("scanProjectCommands", () => {
