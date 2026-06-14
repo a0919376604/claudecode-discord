@@ -9,18 +9,18 @@ maintained-via: hand
 ---
 
 ## For future Claude
-> Long-term vision for claudecode-discord. Why does this product exist?
-> What does the world look like 3-5 years out if we succeed?
-> This file is mostly stable — updates are rare and significant.
+> claudecode-discord 的長期願景。為什麼這個產品要存在？
+> 如果三到五年後成功了，世界會長什麼樣子？
+> 這份文件改動不頻繁，每次更新都是重要決策。
 
-## Vision Statement
+## 願景
 Chat-driven remote agent — control Claude Code from any phone.
 
-## Why Now
-<what makes this the right moment>
+## 為什麼是現在
+<什麼讓這個時機成立>
 
-## Who It's For
-<the target user, with enough specificity to choose between trade-offs>
+## 服務對象
+<目標使用者；要夠具體到能讓我們在 trade-off 時做選擇>
 
-## What It Looks Like When Done
-<concrete imagery: pages, flows, interactions, outcomes>
+## 完成後長什麼樣
+<具體想像：頁面、流程、互動、結果>

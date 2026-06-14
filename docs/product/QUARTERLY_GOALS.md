@@ -9,17 +9,17 @@ maintained-via: hand
 ---
 
 ## For future Claude
-> Quarterly goals for claudecode-discord. Reviewed at the start of each quarter
-> and used as a forcing function when picking Roadmap "Now" items.
+> claudecode-discord 的季度目標。每季開始時 review 一次,
+> 用來當作挑 Roadmap「Now」項目時的 forcing function。
 
-## Q? YYYY — <theme>
+## Q? YYYY — <主題>
 
 ### Goal 1
-<concrete outcome with metric>
+<具體成果 + 量化指標>
 
 ### Goal 2
 
 ### Goal 3
 
-## Retrospective (filled at end of quarter)
-<what shipped, what slipped, why>
+## 季末 Retrospective (季末填)
+<什麼 ship 了、什麼 slip 了、為什麼>

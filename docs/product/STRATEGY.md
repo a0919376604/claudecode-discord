@@ -9,20 +9,20 @@ maintained-via: hand
 ---
 
 ## For future Claude
-> Current strategic direction for claudecode-discord. Reviewed quarterly.
-> This is how vision becomes a sequence of bets.
+> claudecode-discord 目前的戰略方向，每季 review 一次。
+> 願景如何拆解成一連串的押注。
 
-## Current Bet
-<one sentence: the single most important thing we believe right now>
+## 當前的押注
+<一句話：我們現在最相信的單一事情是什麼>
 
-## Why This Bet
-<2-3 sentences: the reasoning>
+## 為什麼押這個
+<2-3 句：理由>
 
-## What Would Change The Bet
-<concrete observations that would flip our direction>
+## 什麼會讓我們改變押注
+<具體可觀察的訊號 —— 看到什麼就掉頭>
 
-## Adjacent Bets We're NOT Making
-<the strategic "no" list — what we're consciously choosing not to do>
+## 我們刻意不押的相鄰選項
+<策略上的「不做」清單 —— 為了專注而拒絕的事>
 
-## Constraints
-<budget, time, team, technical limits>
+## 限制
+<預算、時間、團隊、技術上限>
