@@ -57,6 +57,23 @@ function truncateDescription(desc: string): string {
 export function parseArgumentHint(hint: string): ParsedParam[] {
   if (!hint || !hint.trim()) return [];
 
+  // Top-level `|` indicates mutually exclusive invocation forms that
+  // Discord slash commands can't represent (every Discord param is
+  // either required or optional, never "required only on branch X").
+  // Without this guard, hints like `[R-NNN] | --adhoc <desc>` would
+  // register <desc> as a required param, forcing users to fill it
+  // even when they didn't take the --adhoc branch. Fall back to the
+  // single-`args` text param via the empty-array contract so the user
+  // can type any of the forms freely. `|` inside a bracket body
+  // (e.g. an inline description) is legal text and does NOT trigger
+  // this fallback — only depth-0 pipes do.
+  let depth = 0;
+  for (const ch of hint) {
+    if (ch === "<" || ch === "[") depth++;
+    else if (ch === ">" || ch === "]") depth = Math.max(0, depth - 1);
+    else if (ch === "|" && depth === 0) return [];
+  }
+
   const params: ParsedParam[] = [];
   const seenNames = new Map<string, number>();
   let match: RegExpExecArray | null;

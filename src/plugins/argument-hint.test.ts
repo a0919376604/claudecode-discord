@@ -176,6 +176,33 @@ describe("parseArgumentHint — type inference", () => {
     ]);
   });
 
+  it("returns [] when hint uses top-level `|` alternatives syntax", () => {
+    // Some skills (e.g. /ship-next) use `|` to express mutually exclusive
+    // invocation forms in their argument-hint:
+    //   "[R-NNN] | --adhoc <desc> | --discard R-NNN | --resume R-NNN"
+    // Discord slash commands can't model that — every param is either
+    // required or optional, not "required only if you took this branch".
+    // The naive per-slot parse would have extracted <desc> as a required
+    // param, forcing Discord users to fill it even when they don't want
+    // --adhoc mode. Fall back to single-args so the user can type their
+    // chosen form freely.
+    expect(
+      parseArgumentHint("[R-NNN] | --adhoc <desc> | --discard R-NNN | --resume R-NNN"),
+    ).toEqual([]);
+  });
+
+  it("returns [] for a minimal `|` case", () => {
+    expect(parseArgumentHint("<a> | <b>")).toEqual([]);
+  });
+
+  it("keeps `|` INSIDE a bracket description as legal text", () => {
+    // Pipes within a single param's description should not trigger the
+    // alternatives fallback — they're just inline text.
+    expect(parseArgumentHint("[mode either foo|bar]")).toEqual([
+      { name: "mode", description: "either foo|bar", required: false, originalIndex: 0, type: "text" },
+    ]);
+  });
+
   it("rejects space before colon — '<name :text>' is NOT a type annotation", () => {
     // The colon-and-type must be adjacent to the name (no leading whitespace).
     // The grammar treats ' :text' as the start of the description, so the
