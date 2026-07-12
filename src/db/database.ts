@@ -40,6 +40,34 @@ export function initDatabase(): void {
       UNIQUE(channel_id, dedupe_key)
     );
     CREATE INDEX IF NOT EXISTS idx_wakeup_queue_channel ON wakeup_queue(channel_id, queued_at);
+
+    CREATE TABLE IF NOT EXISTS schedules (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      fire_at INTEGER NOT NULL,
+      prompt TEXT NOT NULL,
+      reason TEXT,
+      source TEXT NOT NULL,
+      ttl_seconds INTEGER NOT NULL DEFAULT 3600,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (channel_id) REFERENCES projects(channel_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedules_fire_at ON schedules(fire_at);
+    CREATE INDEX IF NOT EXISTS idx_schedules_channel ON schedules(channel_id);
+
+    CREATE TABLE IF NOT EXISTS crons (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      cron_expr TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      name TEXT,
+      next_fire INTEGER NOT NULL,
+      last_fire INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (channel_id) REFERENCES projects(channel_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_crons_next_fire ON crons(next_fire);
+    CREATE INDEX IF NOT EXISTS idx_crons_channel ON crons(channel_id);
   `);
 
   // Migration: add source_path column for installations created before /worktree.

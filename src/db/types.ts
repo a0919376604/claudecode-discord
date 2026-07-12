@@ -19,3 +19,5 @@ export interface Session {
 }
 
 export type { WakeupQueueRow } from "../wakeup/types.js";
+export type { ScheduleRow } from "./schedules.js";
+export type { CronRow } from "./crons.js";
