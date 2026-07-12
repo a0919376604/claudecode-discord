@@ -11,8 +11,10 @@ import {
 } from "./claude/credentials-heartbeat.js";
 import { startVpnKeepalive, stopVpnKeepalive } from "./vpn/keepalive.js";
 import { startWakeupWatcher, stopWakeupWatcher } from "./wakeup/bootstrap.js";
+import { Scheduler } from "./scheduler/daemon.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
+let scheduler: Scheduler | null = null;
 
 function acquireLock(): boolean {
   try {
@@ -53,6 +55,7 @@ async function main() {
   process.on("SIGINT", () => {
     stopCredentialsHeartbeat();
     stopVpnKeepalive();
+    scheduler?.stop();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
@@ -60,6 +63,7 @@ async function main() {
   process.on("SIGTERM", () => {
     stopCredentialsHeartbeat();
     stopVpnKeepalive();
+    scheduler?.stop();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
@@ -97,6 +101,9 @@ async function main() {
   console.log("VPN keep-alive started");
   await startWakeupWatcher();
   console.log("Wake-up watcher started");
+  scheduler = new Scheduler(client);
+  await scheduler.start();
+  console.log("Scheduler started");
   console.log("Bot is running!");
 }
 
