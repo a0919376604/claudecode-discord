@@ -31,6 +31,7 @@ import { ensureFreshCredentials } from "./credentials-refresher.js";
 import { resolveWakeupDir } from "../wakeup/paths.js";
 import { drainOldest } from "../wakeup/queue.js";
 import { WakeupPayloadSchema } from "../wakeup/types.js";
+import { createPreToolUseHook } from "../hooks/pre-tool-use.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -305,6 +306,20 @@ class SessionManager {
         },
         ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
         ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
+
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                createPreToolUseHook({
+                  channelId: channel.id,
+                  channel,
+                  now: () => Date.now(),
+                }),
+              ],
+            },
+          ],
+        },
 
         canUseTool: async (
           toolName: string,
