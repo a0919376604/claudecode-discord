@@ -263,3 +263,31 @@ Prerequisites for this smoke test:
 Restore `.env` to defaults (remove the test overrides or set
 `VPN_KEEPALIVE_ENABLED=false`) before returning the bot to normal
 use.
+
+## Harness Scheduling Bridge (spec 2026-07-13)
+
+Run these against a live bot connected to a real Discord channel with a
+registered project. Each item should be tested before merging changes to
+`src/hooks/`, `src/scheduler/`, or `src/db/(schedules|crons).ts`.
+
+- [ ] **Short delay:** Ask Claude to `ScheduleWakeup(60, prompt="say hello")`.
+  After 60±30s, Claude should resume automatically and say hello.
+- [ ] **Cron 2-minute:** `CronCreate("*/2 * * * *", prompt="say tick")`. Observe
+  3 fires roughly 2 minutes apart. Then `CronDelete <id>` to clean up.
+- [ ] **Restart survival:** Ask Claude to `ScheduleWakeup(180)`. Immediately
+  restart the bot (`pm2 restart bot` or Ctrl-C + `npm start`). Confirm wakeup
+  still fires ~3 minutes after original request.
+- [ ] **TTL expiry:** Ask Claude to `ScheduleWakeup(60)`. Immediately put your
+  laptop to sleep for 2 hours. Wake it. Expected: bot posts a bundled miss
+  embed for the expired schedule; no zombie Claude session.
+- [ ] **/schedules commands:** With 2+ pending schedules, run:
+  - `/schedules list` → should show all
+  - `/schedules info sch_xxx` → should show prompt in full
+  - `/schedules cancel sch_xxx` → should remove one
+  - Re-run `/schedules list` → should show remainder
+- [ ] **PushNotification:** Ask Claude to `PushNotification(message="task done")`.
+  Bot should immediately post "task done" to the channel (no @mention).
+- [ ] **Rate limit:** Ask Claude to schedule 51 wakeups in a row. The 51st should
+  be denied with a rate-limit reason.
+
+If any of these fail, do NOT merge — reopen the design.
