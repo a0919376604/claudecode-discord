@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import type { TextChannel } from "discord.js";
 import { createPreToolUseHook } from "./pre-tool-use.js";
 import { __setDbForTests as setSchedDb, listSchedulesByChannel } from "../db/schedules.js";
-import { __setDbForTests as setCronsDb } from "../db/crons.js";
+import { __setDbForTests as setCronsDb, listCronsByChannel } from "../db/crons.js";
 
 const CHANNEL = "123456789012345678";
 const NOW = 1_700_000_000_000;
@@ -121,5 +121,102 @@ describe("PreToolUse hook — ScheduleWakeup", () => {
     );
     // Nothing set → SDK treats as allow (default)
     expect(output).toEqual({ continue: true });
+  });
+});
+
+describe("PreToolUse hook — CronCreate", () => {
+  beforeEach(() => setup());
+
+  it("creates cron with valid expression", async () => {
+    const channel = {} as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => Date.UTC(2026, 6, 13, 0, 0, 0) });
+
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "CronCreate",
+        tool_input: { schedule: "0 9 * * *", prompt: "morning PR", name: "morning" },
+        tool_use_id: "t", session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+
+    expect(output.hookSpecificOutput?.permissionDecision).toBe("deny");
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/Cron created/);
+    const rows = listCronsByChannel(CHANNEL);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cron_expr).toBe("0 9 * * *");
+    expect(rows[0].name).toBe("morning");
+    expect(rows[0].next_fire).toBe(Date.UTC(2026, 6, 13, 9, 0, 0));
+  });
+
+  it("rejects invalid cron expression", async () => {
+    const channel = {} as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => 1_700_000_000_000 });
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "CronCreate",
+        tool_input: { schedule: "not a cron", prompt: "x" },
+        tool_use_id: "t", session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/invalid|parse/i);
+    expect(listCronsByChannel(CHANNEL)).toHaveLength(0);
+  });
+});
+
+describe("PreToolUse hook — CronList", () => {
+  beforeEach(() => setup());
+
+  it("returns formatted list of channel's crons", async () => {
+    // Insert 2 crons directly via DB
+    const now = Date.UTC(2026, 6, 13, 0, 0, 0);
+    const db = (await import("../db/crons.js"));
+    db.insertCron({ id: "cron_a", channel_id: CHANNEL, cron_expr: "0 9 * * *", prompt: "morning", name: "morning", next_fire: now + 9 * 3600_000, last_fire: null, created_at: now });
+    db.insertCron({ id: "cron_b", channel_id: CHANNEL, cron_expr: "0 18 * * *", prompt: "evening", name: null, next_fire: now + 18 * 3600_000, last_fire: null, created_at: now });
+
+    const channel = {} as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => now });
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "CronList",
+        tool_input: {}, tool_use_id: "t",
+        session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+
+    const reason = output.hookSpecificOutput?.permissionDecisionReason ?? "";
+    expect(reason).toContain("cron_a");
+    expect(reason).toContain("cron_b");
+    expect(reason).toContain("0 9 * * *");
+  });
+});
+
+describe("PreToolUse hook — CronDelete", () => {
+  beforeEach(() => setup());
+
+  it("deletes existing cron", async () => {
+    const now = 1_700_000_000_000;
+    const db = (await import("../db/crons.js"));
+    db.insertCron({ id: "cron_a", channel_id: CHANNEL, cron_expr: "* * * * *", prompt: "x", name: null, next_fire: now, last_fire: null, created_at: now });
+
+    const channel = {} as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => now });
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "CronDelete",
+        tool_input: { id: "cron_a" }, tool_use_id: "t",
+        session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/Deleted cron_a/);
+    expect(listCronsByChannel(CHANNEL)).toHaveLength(0);
+  });
+
+  it("returns not-found for nonexistent id", async () => {
+    const channel = {} as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => 1_700_000_000_000 });
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "CronDelete",
+        tool_input: { id: "cron_nonexistent" }, tool_use_id: "t",
+        session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/not found/i);
   });
 });

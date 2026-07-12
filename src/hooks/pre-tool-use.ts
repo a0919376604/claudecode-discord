@@ -1,5 +1,6 @@
 import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { handleScheduleWakeup, type HookDeps, type HookResult } from "./schedule-wakeup.js";
+import { handleCronCreate, handleCronList, handleCronDelete } from "./cron.js";
 
 export function createPreToolUseHook(deps: HookDeps) {
   return async (
@@ -15,6 +16,12 @@ export function createPreToolUseHook(deps: HookDeps) {
       switch (input.tool_name) {
         case "ScheduleWakeup":
           return handleScheduleWakeup(input.tool_input, deps);
+        case "CronCreate":
+          return handleCronCreate(input.tool_input, deps);
+        case "CronList":
+          return handleCronList(input.tool_input, deps);
+        case "CronDelete":
+          return handleCronDelete(input.tool_input, deps);
         default:
           return { continue: true };
       }
