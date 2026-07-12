@@ -29,13 +29,14 @@ import * as pluginsSyncCmd from "./commands/plugins-sync.js";
 import * as pluginsListCmd from "./commands/plugins-list.js";
 import * as refreshBoardCmd from "./commands/refresh-board.js";
 import * as devsyncCmd from "./commands/devsync.js";
+import * as schedulesCmd from "./commands/schedules.js";
 
 import { scanAllCommandSources } from "../plugins/discovery.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { handlePluginCommand, handlePluginAutocomplete } from "../plugins/bridge.js";
 import { getAllProjects } from "../db/database.js";
 
-const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd, refreshBoardCmd, devsyncCmd];
+const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd, refreshBoardCmd, devsyncCmd, schedulesCmd];
 export const botOwnedCommandNames = new Set(commands.map((c) => c.data.name));
 export const commandMap = new Collection<
   string,
