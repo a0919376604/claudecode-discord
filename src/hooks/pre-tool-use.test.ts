@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import type { TextChannel } from "discord.js";
 import { createPreToolUseHook } from "./pre-tool-use.js";
@@ -218,5 +218,40 @@ describe("PreToolUse hook — CronDelete", () => {
       "t", { signal: new AbortController().signal },
     );
     expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/not found/i);
+  });
+});
+
+describe("PreToolUse hook — PushNotification", () => {
+  beforeEach(() => setup());
+
+  it("sends channel.send message and returns deny with confirmation", async () => {
+    const sendSpy = vi.fn().mockResolvedValue(undefined);
+    const channel = { send: sendSpy } as unknown as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => 1_700_000_000_000 });
+
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "PushNotification",
+        tool_input: { message: "任務 X 完成" }, tool_use_id: "t",
+        session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+
+    expect(sendSpy).toHaveBeenCalledOnce();
+    expect(sendSpy.mock.calls[0][0]).toEqual({ content: "任務 X 完成" });
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/Notification sent/);
+  });
+
+  it("rejects on missing message", async () => {
+    const sendSpy = vi.fn();
+    const channel = { send: sendSpy } as unknown as TextChannel;
+    const hook = createPreToolUseHook({ channelId: CHANNEL, channel, now: () => 1_700_000_000_000 });
+    const output = await hook(
+      { hook_event_name: "PreToolUse", tool_name: "PushNotification",
+        tool_input: {}, tool_use_id: "t",
+        session_id: "s", transcript_path: "/t", cwd: "/t" },
+      "t", { signal: new AbortController().signal },
+    );
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toMatch(/invalid|expected/i);
   });
 });
