@@ -148,4 +148,102 @@ enum ClaudeUpdater {
             return "{}".data(using: .utf8)!
         }
     }
+
+    // MARK: - Parse claude --version output
+
+    /// Extract semver from "X.Y.Z (Claude Code)" output. Returns nil if not
+    /// a valid X.Y.Z prefix.
+    static func parseClaudeVersion(_ output: String) -> String? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let firstToken = trimmed.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        let comps = firstToken.split(separator: ".")
+        guard comps.count >= 2 else { return nil }
+        guard comps.allSatisfy({ Int($0) != nil }) else { return nil }
+        return firstToken
+    }
+
+    // MARK: - Semver comparison
+
+    /// Compare two dotted numeric version strings (e.g. "0.2.141" < "0.3.0").
+    /// Missing components treated as 0. Non-numeric components are treated
+    /// as 0 (prerelease tags fall back to numeric prefix comparison).
+    static func compareSemver(_ a: String, _ b: String) -> ComparisonResult {
+        let aParts = a.split(separator: ".").map { Int($0) ?? 0 }
+        let bParts = b.split(separator: ".").map { Int($0) ?? 0 }
+        let len = Swift.max(aParts.count, bParts.count)
+        for i in 0..<len {
+            let av = i < aParts.count ? aParts[i] : 0
+            let bv = i < bParts.count ? bParts[i] : 0
+            if av < bv { return .orderedAscending }
+            if av > bv { return .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    // MARK: - Blocklist logic
+
+    /// Version is blocklisted once its attempts reach the threshold (3).
+    /// Entries with attempts < 3 are "in-progress failures," not yet blocking.
+    static let blocklistThreshold = 3
+
+    static func isBlocklisted(_ version: String, blocklist: [BlocklistEntry]) -> Bool {
+        guard let entry = blocklist.first(where: { $0.version == version }) else {
+            return false
+        }
+        return entry.attempts >= blocklistThreshold
+    }
+
+    /// Add a new failed-attempt entry, or increment the count for an existing one.
+    /// Caps the blocklist at 30 entries (drops least-recently-failed).
+    static func upsertBlocklist(
+        _ blocklist: [BlocklistEntry],
+        version: String,
+        reason: String,
+        logSnippet: String?,
+        now: Date
+    ) -> [BlocklistEntry] {
+        var result = blocklist
+        if let idx = result.firstIndex(where: { $0.version == version }) {
+            result[idx].attempts += 1
+            result[idx].lastFailedAt = now
+            result[idx].reason = reason
+            result[idx].logSnippet = logSnippet
+        } else {
+            result.append(BlocklistEntry(
+                version: version, attempts: 1,
+                lastFailedAt: now, reason: reason, logSnippet: logSnippet
+            ))
+        }
+        if result.count > 30 {
+            result.sort { $0.lastFailedAt > $1.lastFailedAt }
+            result = Array(result.prefix(30))
+        }
+        return result
+    }
+
+    // MARK: - Debounce
+
+    /// Should the daily check run now, given the last-check timestamp?
+    static func shouldCheck(lastCheck: Date?, now: Date, debounceHours: Int) -> Bool {
+        guard let last = lastCheck else { return true }
+        let debounceSeconds = TimeInterval(debounceHours * 3600)
+        return now.timeIntervalSince(last) >= debounceSeconds
+    }
+
+    // MARK: - History rotation
+
+    /// Append `newEntry`, then trim to at most `cap` entries (drop from the front).
+    static func nextRotatedHistory(
+        _ history: [HistoryEntry],
+        newEntry: HistoryEntry,
+        cap: Int
+    ) -> [HistoryEntry] {
+        var result = history
+        result.append(newEntry)
+        if result.count > cap {
+            result = Array(result.suffix(cap))
+        }
+        return result
+    }
 }
