@@ -1847,6 +1847,273 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+
+    // MARK: - SDK update pipeline
+
+    private var sdkBackupsDir: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent(".claudecode-discord")
+            .appendingPathComponent("sdk-backups")
+    }
+
+    private var sdkPackageJsonPath: String { "\(botDir)/package.json" }
+    private var sdkPackageLockPath: String { "\(botDir)/package-lock.json" }
+    private var sdkBundledClaudePath: String {
+        "\(botDir)/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
+    }
+
+    private func readSdkCurrentVersion() -> String? {
+        let pkgPath = "\(botDir)/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = obj["version"] as? String else {
+            return nil
+        }
+        return version
+    }
+
+    /// Create ~/.claudecode-discord/sdk-backups/<iso>-<version>/ with copies of
+    /// package.json and package-lock.json. Returns the URL, or nil on failure.
+    private func createSnapshot(version: String) -> URL? {
+        let iso = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let name = "\(iso)-\(version)"
+        let dir = sdkBackupsDir.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(
+                atPath: sdkPackageJsonPath,
+                toPath: dir.appendingPathComponent("package.json").path)
+            if FileManager.default.fileExists(atPath: sdkPackageLockPath) {
+                try FileManager.default.copyItem(
+                    atPath: sdkPackageLockPath,
+                    toPath: dir.appendingPathComponent("package-lock.json").path)
+            }
+            return dir
+        } catch {
+            NSLog("[updater] snapshot failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Restore package.json + package-lock.json from snapshot, then
+    /// `npm install` + `npm run build` to sync node_modules and dist.
+    /// Returns true if the restore appeared to succeed (package.json exists
+    /// after copy). Downstream should notify on any anomaly.
+    private func restoreSnapshot(from url: URL) -> Bool {
+        let pkgSrc = url.appendingPathComponent("package.json")
+        let lockSrc = url.appendingPathComponent("package-lock.json")
+        do {
+            try? FileManager.default.removeItem(atPath: sdkPackageJsonPath)
+            try FileManager.default.copyItem(
+                atPath: pkgSrc.path, toPath: sdkPackageJsonPath)
+            if FileManager.default.fileExists(atPath: lockSrc.path) {
+                try? FileManager.default.removeItem(atPath: sdkPackageLockPath)
+                try FileManager.default.copyItem(
+                    atPath: lockSrc.path, toPath: sdkPackageLockPath)
+            }
+        } catch {
+            NSLog("[updater] restoreSnapshot copy failed: \(error)")
+            return false
+        }
+        let installOut = runShell("cd '\(botDir)' && npm install 2>&1")
+        let buildOut = runShell("cd '\(botDir)' && npm run build 2>&1")
+        NSLog("[updater] rollback npm install tail: \(installOut.suffix(200))")
+        NSLog("[updater] rollback npm build tail: \(buildOut.suffix(200))")
+        return FileManager.default.fileExists(atPath: sdkPackageJsonPath)
+    }
+
+    /// Rotate snapshot storage: keep newest 3 non-FAILED, delete FAILED > 7d.
+    private func rotateSnapshots() {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: sdkBackupsDir,
+            includingPropertiesForKeys: [.creationDateKey]) else { return }
+
+        let sevenDaysAgo = Date().addingTimeInterval(-7 * 86400)
+        for url in contents where url.lastPathComponent.hasSuffix("-FAILED") {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let created = attrs[.creationDate] as? Date, created < sevenDaysAgo {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        let nonFailed = contents
+            .filter { !$0.lastPathComponent.hasSuffix("-FAILED") }
+            .sorted { a, b in
+                let ad = (try? FileManager.default.attributesOfItem(atPath: a.path))?[.creationDate] as? Date ?? .distantPast
+                let bd = (try? FileManager.default.attributesOfItem(atPath: b.path))?[.creationDate] as? Date ?? .distantPast
+                return ad > bd
+            }
+        for url in nonFailed.dropFirst(3) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Full 5-step verify (+ optional 6th for test suite). Returns
+    /// (ok, failedStep, logSnippet).
+    private func verifySdk(state: ClaudeUpdater.State, expectedVersion: String)
+        -> (ok: Bool, failedStep: String?, logSnippet: String?) {
+
+        // (b) installed version file must match npm-view latest
+        let installed = readSdkCurrentVersion()
+        if installed != expectedVersion {
+            return (false, "version_mismatch",
+                    "installed=\(installed ?? "nil") expected=\(expectedVersion)")
+        }
+
+        // (c) tsc --noEmit — TypeScript type check
+        let tscOut = runShell("cd '\(botDir)' && npx tsc --noEmit 2>&1")
+        if tscOut.contains("error TS") {
+            return (false, "tsc", String(tscOut.suffix(500)))
+        }
+
+        // (d) npm run build — tsup packages to dist/
+        let buildOut = runShell("cd '\(botDir)' && npm run build 2>&1")
+        if !buildOut.contains("Build success") && !buildOut.contains("build success") {
+            return (false, "build", String(buildOut.suffix(500)))
+        }
+
+        // (e) SDK-bundled claude binary responds to --version
+        let bundledOut = runShell("'\(sdkBundledClaudePath)' --version 2>/dev/null")
+        if ClaudeUpdater.parseClaudeVersion(bundledOut) == nil {
+            return (false, "bundled_claude", "output: \(bundledOut.prefix(200))")
+        }
+
+        // (f) optional: full test suite
+        if state.verifyRunTests {
+            let testOut = runShell("cd '\(botDir)' && npm test -- --run 2>&1")
+            if testOut.contains(" failed") || testOut.contains("FAIL ") {
+                return (false, "tests", String(testOut.suffix(500)))
+            }
+        }
+
+        return (true, nil, nil)
+    }
+
+    /// Attempts to update @anthropic-ai/claude-agent-sdk. Returns true if any
+    /// state change occurred (success, rollback, or blocklist entry added).
+    @discardableResult
+    private func updateSdk() -> Bool {
+        var state = loadState()
+
+        let currentVersion = readSdkCurrentVersion()
+        state.sdk.current = currentVersion
+
+        guard let latest = npmView(package: "@anthropic-ai/claude-agent-sdk") else {
+            state.checkErrors.append(ClaudeUpdater.CheckError(
+                at: Date(), kind: .sdk,
+                reason: "npm view failed (network?)"))
+            if state.checkErrors.count > 5 {
+                state.checkErrors = Array(state.checkErrors.suffix(5))
+            }
+            saveState(state)
+            return false
+        }
+
+        if let cur = currentVersion, cur == latest {
+            saveState(state)
+            return false
+        }
+
+        if ClaudeUpdater.isBlocklisted(latest, blocklist: state.sdk.blocklist) {
+            saveState(state)
+            return false
+        }
+
+        let previous = currentVersion ?? "unknown"
+
+        // Snapshot before touching anything
+        guard let snapshot = createSnapshot(version: previous) else {
+            sendNotification(
+                title: "🔴 Cannot Snapshot",
+                body: "SDK update skipped — check disk space",
+                sound: "Sosumi")
+            return false
+        }
+
+        // Stop bot for the install window
+        let wasRunning = isRunning()
+        if wasRunning { stopBot() }
+
+        // Install new
+        let installOut = runShell(
+            "cd '\(botDir)' && npm install @anthropic-ai/claude-agent-sdk@\(latest) --save 2>&1")
+        try? installOut.write(
+            to: snapshot.appendingPathComponent("install.log"),
+            atomically: true, encoding: .utf8)
+
+        // Verify
+        let (ok, failedStep, snippet) = verifySdk(state: state, expectedVersion: latest)
+
+        let now = Date()
+        if ok {
+            if wasRunning { startBot() }
+            state.sdk.current = latest
+            state.history = ClaudeUpdater.nextRotatedHistory(
+                state.history,
+                newEntry: ClaudeUpdater.HistoryEntry(
+                    kind: .sdk, from: previous, to: latest,
+                    at: now, outcome: "success", failedAtStep: nil),
+                cap: 30)
+            saveState(state)
+            rotateSnapshots()
+            sendNotification(
+                title: "🟢 Claude SDK Updated",
+                body: "SDK: \(previous) → \(latest)\nBot restarted.")
+            return true
+        }
+
+        // Verify failed → rollback
+        let restored = restoreSnapshot(from: snapshot)
+        if wasRunning && restored { startBot() }
+
+        // Rename snapshot to FAILED for debug retention (rotateSnapshots clears >7d)
+        let failedDir = snapshot.deletingLastPathComponent()
+            .appendingPathComponent(snapshot.lastPathComponent + "-FAILED")
+        try? FileManager.default.moveItem(at: snapshot, to: failedDir)
+        if let snippet = snippet {
+            let logURL = failedDir.appendingPathComponent("failure-log.txt")
+            try? "failed_step: \(failedStep ?? "unknown")\n\n\(snippet)"
+                .write(to: logURL, atomically: true, encoding: .utf8)
+        }
+
+        state.sdk.blocklist = ClaudeUpdater.upsertBlocklist(
+            state.sdk.blocklist,
+            version: latest,
+            reason: "verify failed at step \(failedStep ?? "unknown")",
+            logSnippet: snippet,
+            now: now)
+        state.history = ClaudeUpdater.nextRotatedHistory(
+            state.history,
+            newEntry: ClaudeUpdater.HistoryEntry(
+                kind: .sdk, from: previous, to: latest,
+                at: now, outcome: restored ? "failed" : "rollback_failed",
+                failedAtStep: failedStep),
+            cap: 30)
+        state.sdk.current = readSdkCurrentVersion()
+        saveState(state)
+
+        let attempts = state.sdk.blocklist
+            .first(where: { $0.version == latest })?.attempts ?? 1
+        if !restored {
+            sendNotification(
+                title: "🔴🔴 Recovery Failed",
+                body: "SDK update AND rollback failed — manual fix required",
+                sound: "Sosumi")
+        } else if attempts == ClaudeUpdater.blocklistThreshold {
+            sendNotification(
+                title: "⚠️ SDK Update Blocked",
+                body: "SDK \(latest) blocked after 3 failed attempts")
+        } else {
+            sendNotification(
+                title: "🔴 SDK Update Failed",
+                body: "SDK \(latest) failed at step \(failedStep ?? "?"), rolled back to \(previous)",
+                sound: "Sosumi")
+        }
+        return true
+    }
 }
 
 // MARK: - Status Dot View
