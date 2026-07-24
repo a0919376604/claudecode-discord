@@ -16,7 +16,7 @@ let package = Package(
             name: "ClaudeBotMenu",
             path: ".",
             exclude: ["Package.swift", "Tests", "TESTING-updater.md", "ClaudeBotMenu"],
-            sources: ["ClaudeBotMenu.swift"]
+            sources: ["ClaudeBotMenu.swift", "ClaudeUpdater.swift"]
         ),
         .testTarget(
             name: "ClaudeUpdaterTests",

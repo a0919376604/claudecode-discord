@@ -1733,25 +1733,33 @@ class StatusDot: NSView {
 
 // MARK: - App Entry Point
 
-// Kill any existing ClaudeBotMenu instances (prevent duplicates)
-let myPid = ProcessInfo.processInfo.processIdentifier
-let runningApps = NSWorkspace.shared.runningApplications
-for app in runningApps {
-    if let name = app.executableURL?.lastPathComponent, name == "ClaudeBotMenu",
-       app.processIdentifier != myPid {
-        app.terminate()
+// `@main` (via ClaudeBotMenuApp below) lets the module be @testable-imported
+// from unit tests. Top-level statements in an executable target would block
+// that, so all boot logic lives inside `main()`.
+@main
+struct ClaudeBotMenuApp {
+    static func main() {
+        // Kill any existing ClaudeBotMenu instances (prevent duplicates)
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        let runningApps = NSWorkspace.shared.runningApplications
+        for app in runningApps {
+            if let name = app.executableURL?.lastPathComponent, name == "ClaudeBotMenu",
+               app.processIdentifier != myPid {
+                app.terminate()
+            }
+        }
+        // Also pkill in case NSWorkspace doesn't catch all
+        let killTask = Process()
+        killTask.launchPath = "/bin/bash"
+        killTask.arguments = ["-c", "pgrep -f ClaudeBotMenu | grep -v \(myPid) | xargs kill 2>/dev/null"]
+        try? killTask.run()
+        killTask.waitUntilExit()
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        application.run()
     }
 }
-// Also pkill in case NSWorkspace doesn't catch all
-let killTask = Process()
-killTask.launchPath = "/bin/bash"
-killTask.arguments = ["-c", "pgrep -f ClaudeBotMenu | grep -v \(myPid) | xargs kill 2>/dev/null"]
-try? killTask.run()
-killTask.waitUntilExit()
-Thread.sleep(forTimeInterval: 0.3)
-
-let application = NSApplication.shared
-application.setActivationPolicy(.accessory)
-let delegate = AppDelegate()
-application.delegate = delegate
-application.run()
