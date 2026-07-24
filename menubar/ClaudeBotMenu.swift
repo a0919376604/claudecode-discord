@@ -1693,6 +1693,160 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
     }
+
+    // MARK: - Claude auto-update (state file + notifications)
+
+    private var stateFileURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent(".claudecode-discord")
+            .appendingPathComponent("claude-update-state.json")
+    }
+
+    private func ensureStateDirExists() {
+        let dir = stateFileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+    }
+
+    private func loadState() -> ClaudeUpdater.State {
+        guard let data = try? Data(contentsOf: stateFileURL) else {
+            return ClaudeUpdater.defaultState()
+        }
+        return ClaudeUpdater.loadState(from: data)
+    }
+
+    private func saveState(_ state: ClaudeUpdater.State) {
+        ensureStateDirExists()
+        let data = ClaudeUpdater.serializeState(state)
+        let tmp = stateFileURL.appendingPathExtension("tmp")
+        do {
+            try data.write(to: tmp, options: .atomic)
+            // On macOS, replaceItemAt swaps the temp file into the final path
+            // atomically. If the target doesn't exist yet, replace throws;
+            // fall back to a direct move.
+            if FileManager.default.fileExists(atPath: stateFileURL.path) {
+                _ = try? FileManager.default.replaceItemAt(stateFileURL, withItemAt: tmp)
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: stateFileURL)
+            }
+        } catch {
+            NSLog("[updater] saveState failed: \(error)")
+        }
+    }
+
+    private func sendNotification(title: String, body: String, sound: String = "Ping") {
+        // Escape single quotes for AppleScript
+        let esc = { (s: String) -> String in s.replacingOccurrences(of: "'", with: "\\'") }
+        let script = "display notification '\(esc(body))' with title '\(esc(title))' sound name '\(sound)'"
+        _ = runShell("osascript -e \"\(script)\"")
+    }
+
+    private func npmView(package: String) -> String? {
+        let out = runShell("npm view \(package) version 2>/dev/null")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.isEmpty ? nil : out
+    }
+
+    /// Attempts to update the global @anthropic-ai/claude-code CLI.
+    /// Returns true if any state change occurred (successful update, rollback,
+    /// or blocklist entry added).
+    @discardableResult
+    private func updateCli() -> Bool {
+        var state = loadState()
+
+        // 1. Current version
+        let currentVersion = ClaudeUpdater.parseClaudeVersion(runShell("claude --version 2>/dev/null"))
+        state.cli.current = currentVersion
+
+        // 2. Latest from npm
+        guard let latest = npmView(package: "@anthropic-ai/claude-code") else {
+            state.checkErrors.append(ClaudeUpdater.CheckError(
+                at: Date(), kind: .cli,
+                reason: "npm view failed (network?)"))
+            if state.checkErrors.count > 5 {
+                state.checkErrors = Array(state.checkErrors.suffix(5))
+            }
+            saveState(state)
+            return false
+        }
+
+        // 3. Same version → skip
+        if let cur = currentVersion, cur == latest {
+            saveState(state)
+            return false
+        }
+
+        // 4. Blocklisted → skip silently
+        if ClaudeUpdater.isBlocklisted(latest, blocklist: state.cli.blocklist) {
+            saveState(state)
+            return false
+        }
+
+        // 5. Attempt install
+        let previous = currentVersion
+        let installOutput = runShell(
+            "npm install -g @anthropic-ai/claude-code@\(latest) 2>&1")
+
+        // 6. Verify
+        let verified = ClaudeUpdater.parseClaudeVersion(
+            runShell("claude --version 2>/dev/null"))
+        let verifyOK = verified == latest
+
+        let now = Date()
+        if verifyOK {
+            state.cli.current = latest
+            state.history = ClaudeUpdater.nextRotatedHistory(
+                state.history,
+                newEntry: ClaudeUpdater.HistoryEntry(
+                    kind: .cli, from: previous, to: latest,
+                    at: now, outcome: "success", failedAtStep: nil),
+                cap: 30)
+            saveState(state)
+            let fromStr = previous ?? "(none)"
+            sendNotification(
+                title: "🟢 Claude Updated",
+                body: "CLI: \(fromStr) → \(latest)")
+            return true
+        }
+
+        // 7. Verify failed — rollback to previous version
+        let snippet = String(installOutput.suffix(500))
+        if let prev = previous {
+            _ = runShell("npm install -g @anthropic-ai/claude-code@\(prev) 2>&1")
+        }
+        state.cli.blocklist = ClaudeUpdater.upsertBlocklist(
+            state.cli.blocklist,
+            version: latest,
+            reason: "verify failed after npm install",
+            logSnippet: snippet,
+            now: now)
+        state.history = ClaudeUpdater.nextRotatedHistory(
+            state.history,
+            newEntry: ClaudeUpdater.HistoryEntry(
+                kind: .cli, from: previous, to: latest,
+                at: now, outcome: "failed", failedAtStep: "verify"),
+            cap: 30)
+        state.cli.current = previous
+        saveState(state)
+
+        // Notify once when reaching threshold, silent thereafter
+        let entryAttempts = state.cli.blocklist
+            .first(where: { $0.version == latest })?.attempts ?? 1
+        if entryAttempts == ClaudeUpdater.blocklistThreshold {
+            sendNotification(
+                title: "⚠️ Update Blocked",
+                body: "CLI \(latest) blocked after 3 failed attempts")
+        } else {
+            let prevStr = previous ?? "(none)"
+            sendNotification(
+                title: "🔴 Claude Update Failed",
+                body: "CLI \(latest) → \(prevStr) (rolled back)",
+                sound: "Sosumi")
+        }
+        return true
+    }
 }
 
 // MARK: - Status Dot View
