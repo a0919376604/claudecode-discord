@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var skipPermsFile: String
     private var currentVersion: String = "unknown"
     private var updateAvailable: Bool = false
+    private var claudeUpdateInProgress: Bool = false
     private var controlPanel: NSWindow?
     private var lastKnownRunning: Bool = false
     private var botProcess: Process?
@@ -109,9 +110,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.lastKnownRunning = nowRunning
         }
-        // Check for updates every 5 hours
+        // Check for updates every 5 hours (bot code + Claude versions)
         Timer.scheduledTimer(withTimeInterval: 18000, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
+            self?.checkClaudeUpdatesIfDue()
+        }
+        // Boot-time: run one Claude update check in the background
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            self?.checkClaudeUpdatesIfDue()
         }
         loadUsageCache(forceReload: true)
         fetchUsageIfStale()
@@ -466,6 +472,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             checkItem.target = self
             menu.addItem(checkItem)
         }
+
+        // --- Claude versions section (auto-updater state) ---
+        menu.addItem(NSMenuItem.separator())
+
+        let claudeState = loadState()
+        let cliIcon: String = claudeState.cli.blocklist.contains(where: {
+            $0.attempts >= ClaudeUpdater.blocklistThreshold
+        }) ? "\u{2717}" : "\u{2713}"
+        let sdkIcon: String = claudeState.sdk.blocklist.contains(where: {
+            $0.attempts >= ClaudeUpdater.blocklistThreshold
+        }) ? "\u{2717}" : "\u{2713}"
+
+        let cliItem = NSMenuItem(
+            title: "CLI:  \(claudeState.cli.current ?? "(none)") \(cliIcon)",
+            action: nil, keyEquivalent: "")
+        cliItem.isEnabled = false
+        menu.addItem(cliItem)
+
+        let sdkItem = NSMenuItem(
+            title: "SDK:  \(claudeState.sdk.current ?? "(none)") \(sdkIcon)",
+            action: nil, keyEquivalent: "")
+        sdkItem.isEnabled = false
+        menu.addItem(sdkItem)
+
+        let checkNow = NSMenuItem(
+            title: "Check now", action: #selector(checkNowManually), keyEquivalent: "")
+        checkNow.target = self
+        menu.addItem(checkNow)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -1692,6 +1726,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    // MARK: - Claude auto-update: entry points
+
+    /// Daily entry point. Skips if a check ran within the debounce window
+    /// (default 20 hours) unless `force: true`.
+    @objc func checkClaudeUpdatesIfDue(force: Bool = false) {
+        if claudeUpdateInProgress { return }
+
+        var state = loadState()
+        let now = Date()
+        if !force && !ClaudeUpdater.shouldCheck(
+            lastCheck: state.lastCheck, now: now, debounceHours: 20) {
+            return
+        }
+
+        claudeUpdateInProgress = true
+        defer {
+            claudeUpdateInProgress = false
+            DispatchQueue.main.async { [weak self] in self?.buildMenu() }
+        }
+
+        state.lastCheck = now
+        saveState(state)
+
+        // CLI first (low risk, independent), SDK second (may restart bot)
+        _ = updateCli()
+        _ = updateSdk()
+    }
+
+    /// Menu handler for "Check now" — bypasses the 20h debounce.
+    @objc private func checkNowManually() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.checkClaudeUpdatesIfDue(force: true)
+        }
     }
 
     // MARK: - Claude auto-update (state file + notifications)
