@@ -17,6 +17,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentVersion: String = "unknown"
     private var updateAvailable: Bool = false
     private var claudeUpdateInProgress: Bool = false
+    private let claudeUpdateLock = NSLock()
+    private var lastNetworkFailureDuringCheck: Bool = false
     private var controlPanel: NSWindow?
     private var lastKnownRunning: Bool = false
     private var botProcess: Process?
@@ -113,7 +115,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Check for updates every 5 hours (bot code + Claude versions)
         Timer.scheduledTimer(withTimeInterval: 18000, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
-            self?.checkClaudeUpdatesIfDue()
+            // I2 fix: never run the Claude update flow on the main thread.
+            // updateSdk can block ~90s (npm install + tsc + build + tests)
+            // and would freeze the tray UI during that whole window.
+            DispatchQueue.global(qos: .background).async { [weak self] in
+                self?.checkClaudeUpdatesIfDue()
+            }
         }
         // Boot-time: run one Claude update check in the background
         DispatchQueue.global(qos: .background).async { [weak self] in
@@ -1732,28 +1739,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Daily entry point. Skips if a check ran within the debounce window
     /// (default 20 hours) unless `force: true`.
+    ///
+    /// Safe to call from any thread. Concurrent calls are serialised via
+    /// `claudeUpdateLock`; a second caller finds `claudeUpdateInProgress`
+    /// already set and bails.
     @objc func checkClaudeUpdatesIfDue(force: Bool = false) {
-        if claudeUpdateInProgress { return }
+        // I3 fix: guard the busy flag under a lock so timer + Check now
+        // + boot-time can't race into overlapping npm installs.
+        claudeUpdateLock.lock()
+        if claudeUpdateInProgress {
+            claudeUpdateLock.unlock()
+            return
+        }
+        claudeUpdateInProgress = true
+        claudeUpdateLock.unlock()
 
-        var state = loadState()
+        defer {
+            claudeUpdateLock.lock()
+            claudeUpdateInProgress = false
+            claudeUpdateLock.unlock()
+            DispatchQueue.main.async { [weak self] in self?.buildMenu() }
+        }
+
+        let state = loadState()
         let now = Date()
         if !force && !ClaudeUpdater.shouldCheck(
             lastCheck: state.lastCheck, now: now, debounceHours: 20) {
             return
         }
 
-        claudeUpdateInProgress = true
-        defer {
-            claudeUpdateInProgress = false
-            DispatchQueue.main.async { [weak self] in self?.buildMenu() }
-        }
-
-        state.lastCheck = now
-        saveState(state)
+        // I1 fix: don't bump lastCheck up-front. If both updates hit network
+        // failure, we want the next timer tick to retry — silencing that
+        // for 20h defeats the whole feature.
+        lastNetworkFailureDuringCheck = false
 
         // CLI first (low risk, independent), SDK second (may restart bot)
         _ = updateCli()
         _ = updateSdk()
+
+        // Only persist lastCheck if we actually completed a check. Network
+        // failure means we don't know if there's a new version yet.
+        if !lastNetworkFailureDuringCheck {
+            var finalState = loadState()
+            finalState.lastCheck = now
+            saveState(finalState)
+        }
     }
 
     /// Menu handler for "Check now" — bypasses the 20h debounce.
@@ -1806,10 +1836,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func sendNotification(title: String, body: String, sound: String = "Ping") {
-        // Escape single quotes for AppleScript
-        let esc = { (s: String) -> String in s.replacingOccurrences(of: "'", with: "\\'") }
-        let script = "display notification '\(esc(body))' with title '\(esc(title))' sound name '\(sound)'"
-        _ = runShell("osascript -e \"\(script)\"")
+        // I4 fix: pass the AppleScript as a direct argument (no shell) so
+        // `"`, `$`, and backticks in title/body can't inject bash. AppleScript
+        // strings still need `"` and `\` escaped inside the double-quoted
+        // AppleScript literals below.
+        let escAS = { (s: String) -> String in
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        let script = "display notification \"\(escAS(body))\" with title \"\(escAS(title))\" sound name \"\(escAS(sound))\""
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
+        try? task.run()
+        task.waitUntilExit()
     }
 
     private func npmView(package: String) -> String? {
@@ -1831,6 +1871,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. Latest from npm
         guard let latest = npmView(package: "@anthropic-ai/claude-code") else {
+            lastNetworkFailureDuringCheck = true
             state.checkErrors.append(ClaudeUpdater.CheckError(
                 at: Date(), kind: .cli,
                 reason: "npm view failed (network?)"))
@@ -2071,6 +2112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         state.sdk.current = currentVersion
 
         guard let latest = npmView(package: "@anthropic-ai/claude-agent-sdk") else {
+            lastNetworkFailureDuringCheck = true
             state.checkErrors.append(ClaudeUpdater.CheckError(
                 at: Date(), kind: .sdk,
                 reason: "npm view failed (network?)"))
