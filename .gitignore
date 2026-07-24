@@ -15,10 +15,11 @@ CLAUDE.md
 bot.log
 bot-error.log
 menubar/ClaudeBotMenu
+menubar/.build/
+menubar/Package.resolved
 tray/ClaudeBotTray.exe
 ClaudeBot.exe
 com.claude-discord.plist
-.tray-lang
 .skip-permissions
 usage-debug.log
 usage-error.log

@@ -13,11 +13,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var plistDst: String
     private var menubarPlistDst: String
     private var envPath: String
-    private var langPrefFile: String
     private var skipPermsFile: String
     private var currentVersion: String = "unknown"
     private var updateAvailable: Bool = false
-    private var isKorean: Bool = false
     private var controlPanel: NSWindow?
     private var lastKnownRunning: Bool = false
     private var botProcess: Process?
@@ -37,28 +35,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         plistDst = NSHomeDirectory() + "/Library/LaunchAgents/com.claude-discord.plist"
         menubarPlistDst = NSHomeDirectory() + "/Library/LaunchAgents/com.claude-discord-menubar.plist"
         envPath = botDir + "/.env"
-        langPrefFile = botDir + "/.tray-lang"
         skipPermsFile = botDir + "/.skip-permissions"
         super.init()
-
-        // Load saved language preference
-        if let saved = try? String(contentsOfFile: langPrefFile, encoding: .utf8) {
-            isKorean = saved.trimmingCharacters(in: .whitespacesAndNewlines) == "kr"
-        }
-    }
-
-    // MARK: - Localization
-
-    private func L(_ en: String, _ kr: String) -> String {
-        return isKorean ? kr : en
-    }
-
-    private func setLanguage(_ korean: Bool) {
-        isKorean = korean
-        try? (korean ? "kr" : "en").write(toFile: langPrefFile, atomically: true, encoding: .utf8)
-        updateStatus()
-        buildMenu()
-        rebuildControlPanel()
     }
 
     // MARK: - Lifecycle
@@ -137,7 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         loadUsageCache(forceReload: true)
         fetchUsageIfStale()
-        // 첫 실행 시 컨트롤 패널 표시 (.env 미설정이면 설정 다이얼로그도 함께)
+        // First run: show control panel (also settings dialog if .env missing)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.showControlPanel()
             if !self.isEnvConfigured() {
@@ -275,8 +253,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         checkForUpdates()
         if !updateAvailable {
             let alert = NSAlert()
-            alert.messageText = L("No Updates", "업데이트 없음")
-            alert.informativeText = L("You are running the latest version.", "최신 버전을 사용 중입니다.")
+            alert.messageText = "No Updates"
+            alert.informativeText = "You are running the latest version."
             alert.alertStyle = .informational
             alert.runModal()
         }
@@ -285,16 +263,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func performUpdate() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = L("Update Available", "업데이트 가능")
+        alert.messageText = "Update Available"
 
         let versionInfo = cachedNewVersion.isEmpty ? "" : "\(currentVersion) → \(cachedNewVersion)\n\n"
-        alert.informativeText = versionInfo + L(
-            "Do you want to update? The bot and menu bar app will restart.",
-            "업데이트하시겠습니까? 봇과 메뉴바 앱이 재시작됩니다."
-        )
+        alert.informativeText = versionInfo + "Do you want to update? The bot and menu bar app will restart."
         alert.alertStyle = .informational
-        alert.addButton(withTitle: L("Update", "업데이트"))
-        alert.addButton(withTitle: L("Cancel", "취소"))
+        alert.addButton(withTitle: "Update")
+        alert.addButton(withTitle: "Cancel")
 
         if !cachedReleaseNotes.isEmpty {
             let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 250))
@@ -327,8 +302,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let remote = runShell("cd '\(botDir)' && git rev-parse origin/main").trimmingCharacters(in: .whitespacesAndNewlines)
             if !afterPull.isEmpty && !remote.isEmpty && afterPull != remote {
                 let errAlert = NSAlert()
-                errAlert.messageText = L("Update Failed", "업데이트 실패")
-                errAlert.informativeText = L("git pull failed:\n", "git pull 실패:\n") + pullOutput
+                errAlert.messageText = "Update Failed"
+                errAlert.informativeText = "git pull failed:\n" + pullOutput
                 errAlert.alertStyle = .critical
                 errAlert.runModal()
                 if wasRunning {
@@ -351,7 +326,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if xcrunCheck.contains("license") || xcrunCheck.contains("error") {
                     runShell("osascript -e 'do shell script \"xcodebuild -license accept\" with administrator privileges' 2>/dev/null")
                 }
-                runShell("swiftc -o '\(swiftBin)' '\(swiftSrc)' -framework Cocoa 2>&1")
+                let menubarDir = (swiftSrc as NSString).deletingLastPathComponent
+                runShell("cd '\(menubarDir)' && swift build -c release && ln -sfn \"$(pwd)/.build/release/ClaudeBotMenu\" ./ClaudeBotMenu 2>&1")
 
                 if wasRunning {
                     startBot()
@@ -369,8 +345,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let doneAlert = NSAlert()
-            doneAlert.messageText = L("Update Complete", "업데이트 완료")
-            doneAlert.informativeText = L("Updated to version: ", "업데이트된 버전: ") + currentVersion + "\n\n" + output
+            doneAlert.messageText = "Update Complete"
+            doneAlert.informativeText = "Updated to version: " + currentVersion + "\n\n" + output
             doneAlert.alertStyle = .informational
             doneAlert.runModal()
 
@@ -390,12 +366,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             if !hasEnv {
                 self.statusItem.button?.title = " \u{2699}\u{FE0F}"
-                self.statusItem.button?.toolTip = self.L("Claude Bot: Setup Required", "Claude Bot: 설정 필요")
+                self.statusItem.button?.toolTip = "Claude Bot: Setup Required"
             } else {
                 self.statusItem.button?.title = running ? " \u{1F7E2}" : " \u{1F534}"
                 self.statusItem.button?.toolTip = running
-                    ? self.L("Claude Bot: Running", "Claude Bot: 실행 중")
-                    : self.L("Claude Bot: Stopped", "Claude Bot: 중지됨")
+                    ? "Claude Bot: Running"
+                    : "Claude Bot: Stopped"
             }
         }
     }
@@ -406,55 +382,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hasEnv = isEnvConfigured()
 
         if !hasEnv {
-            let noEnvItem = NSMenuItem(title: L("\u{2699}\u{FE0F} Setup Required", "\u{2699}\u{FE0F} 설정 필요"), action: nil, keyEquivalent: "")
+            let noEnvItem = NSMenuItem(title: "\u{2699}\u{FE0F} Setup Required", action: nil, keyEquivalent: "")
             noEnvItem.isEnabled = false
             menu.addItem(noEnvItem)
             menu.addItem(NSMenuItem.separator())
 
-            let setupItem = NSMenuItem(title: L("Setup...", "설정..."), action: #selector(openSettings), keyEquivalent: "e")
+            let setupItem = NSMenuItem(title: "Setup...", action: #selector(openSettings), keyEquivalent: "e")
             setupItem.target = self
             menu.addItem(setupItem)
         } else {
             let statusText = running
-                ? L("\u{1F7E2} Running", "\u{1F7E2} 실행 중")
-                : L("\u{1F534} Stopped", "\u{1F534} 중지됨")
+                ? "\u{1F7E2} Running"
+                : "\u{1F534} Stopped"
             let statusItem = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
             statusItem.isEnabled = false
             menu.addItem(statusItem)
             menu.addItem(NSMenuItem.separator())
 
             // Control Panel
-            let panelItem = NSMenuItem(title: L("Open Control Panel", "컨트롤 패널 열기"), action: #selector(showControlPanel), keyEquivalent: "p")
+            let panelItem = NSMenuItem(title: "Open Control Panel", action: #selector(showControlPanel), keyEquivalent: "p")
             panelItem.target = self
             menu.addItem(panelItem)
 
             menu.addItem(NSMenuItem.separator())
 
             if running {
-                let stopItem = NSMenuItem(title: L("Stop Bot", "봇 중지"), action: #selector(stopBot), keyEquivalent: "s")
+                let stopItem = NSMenuItem(title: "Stop Bot", action: #selector(stopBot), keyEquivalent: "s")
                 stopItem.target = self
                 menu.addItem(stopItem)
 
-                let restartItem = NSMenuItem(title: L("Restart Bot", "봇 재시작"), action: #selector(restartBot), keyEquivalent: "r")
+                let restartItem = NSMenuItem(title: "Restart Bot", action: #selector(restartBot), keyEquivalent: "r")
                 restartItem.target = self
                 menu.addItem(restartItem)
             } else {
-                let startItem = NSMenuItem(title: L("Start Bot", "봇 시작"), action: #selector(startBot), keyEquivalent: "s")
+                let startItem = NSMenuItem(title: "Start Bot", action: #selector(startBot), keyEquivalent: "s")
                 startItem.target = self
                 menu.addItem(startItem)
             }
 
             menu.addItem(NSMenuItem.separator())
 
-            let settingsItem = NSMenuItem(title: L("Settings...", "설정..."), action: #selector(openSettings), keyEquivalent: "e")
+            let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: "e")
             settingsItem.target = self
             menu.addItem(settingsItem)
 
-            let logItem = NSMenuItem(title: L("View Log", "로그 보기"), action: #selector(openLog), keyEquivalent: "l")
+            let logItem = NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: "l")
             logItem.target = self
             menu.addItem(logItem)
 
-            let folderItem = NSMenuItem(title: L("Open Folder", "폴더 열기"), action: #selector(openFolder), keyEquivalent: "f")
+            let folderItem = NSMenuItem(title: "Open Folder", action: #selector(openFolder), keyEquivalent: "f")
             folderItem.target = self
             menu.addItem(folderItem)
         }
@@ -463,8 +439,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Skip Permissions toggle (dangerous)
         let skipPermsItem = NSMenuItem(
-            title: L("Skip Permissions (⚠️ dangerous)",
-                     "권한 건너뛰기 (⚠️ 위험)"),
+            title: "Skip Permissions (⚠️ dangerous)",
             action: #selector(toggleSkipPermissions),
             keyEquivalent: "")
         skipPermsItem.target = self
@@ -472,43 +447,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(skipPermsItem)
 
         // Auto-start toggle
-        let autoStartItem = NSMenuItem(title: L("Launch on System Startup", "시스템 시작 시 자동 실행"), action: #selector(toggleAutoStart), keyEquivalent: "")
+        let autoStartItem = NSMenuItem(title: "Launch on System Startup", action: #selector(toggleAutoStart), keyEquivalent: "")
         autoStartItem.target = self
         autoStartItem.state = isAutoStartEnabled() ? .on : .off
         menu.addItem(autoStartItem)
 
-        // Language toggle submenu
-        let langItem = NSMenuItem(title: isKorean ? "Language: KR" : "Language: EN", action: nil, keyEquivalent: "")
-        let langMenu = NSMenu()
-        let enItem = NSMenuItem(title: "English", action: #selector(switchToEN), keyEquivalent: "")
-        enItem.target = self
-        enItem.state = !isKorean ? .on : .off
-        langMenu.addItem(enItem)
-        let krItem = NSMenuItem(title: "한국어", action: #selector(switchToKR), keyEquivalent: "")
-        krItem.target = self
-        krItem.state = isKorean ? .on : .off
-        langMenu.addItem(krItem)
-        langItem.submenu = langMenu
-        menu.addItem(langItem)
-
         // Version & update
-        let versionItem = NSMenuItem(title: L("Version: ", "버전: ") + currentVersion, action: nil, keyEquivalent: "")
+        let versionItem = NSMenuItem(title: "Version: " + currentVersion, action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
 
         if updateAvailable {
-            let updateItem = NSMenuItem(title: L("\u{2B06}\u{FE0F} Update Available", "\u{2B06}\u{FE0F} 업데이트 가능"), action: #selector(performUpdate), keyEquivalent: "u")
+            let updateItem = NSMenuItem(title: "\u{2B06}\u{FE0F} Update Available", action: #selector(performUpdate), keyEquivalent: "u")
             updateItem.target = self
             menu.addItem(updateItem)
         } else {
-            let checkItem = NSMenuItem(title: L("Check for Updates", "업데이트 확인"), action: #selector(checkUpdateClicked), keyEquivalent: "")
+            let checkItem = NSMenuItem(title: "Check for Updates", action: #selector(checkUpdateClicked), keyEquivalent: "")
             checkItem.target = self
             menu.addItem(checkItem)
         }
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: L("Quit", "종료"), action: #selector(quitAll), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitAll), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -530,8 +491,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func switchToEN() { setLanguage(false) }
-    @objc private func switchToKR() { setLanguage(true) }
 
     // MARK: - Claude Code Usage
 
@@ -783,13 +742,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = formatter.date(from: isoString) ?? ISO8601DateFormatter().date(from: isoString) else { return "" }
         let diff = date.timeIntervalSinceNow
-        if diff <= 0 { return L("Resetting...", "초기화 중...") }
+        if diff <= 0 { return "Resetting..." }
         let hours = Int(diff) / 3600
         let minutes = (Int(diff) % 3600) / 60
         if hours > 0 {
-            return L("Resets in \(hours)h", "\(hours)시간 후 초기화")
+            return "Resets in \(hours)h"
         } else {
-            return L("Resets in \(minutes)m", "\(minutes)분 후 초기화")
+            return "Resets in \(minutes)m"
         }
     }
 
@@ -842,7 +801,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         var elements: [(view: NSView, height: CGFloat)] = []
 
-        // Header: Icon + Title + Language toggle
+        // Header: Icon + Title
         let headerContainer = NSView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 52))
 
         // App icon (rounded)
@@ -871,25 +830,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         verSmallLabel.textColor = .secondaryLabelColor
         headerContainer.addSubview(verSmallLabel)
 
-        // Language toggle (EN | KR) at top-right
-        let enBtn = createLangButton(title: "EN", selected: !isKorean)
-        enBtn.frame = NSRect(x: contentWidth - 70, y: 18, width: 32, height: 22)
-        enBtn.target = self
-        enBtn.action = #selector(switchToEN)
-        headerContainer.addSubview(enBtn)
-
-        let divider = NSTextField(labelWithString: "|")
-        divider.frame = NSRect(x: contentWidth - 38, y: 18, width: 10, height: 22)
-        divider.alignment = .center
-        divider.textColor = .tertiaryLabelColor
-        headerContainer.addSubview(divider)
-
-        let krBtn = createLangButton(title: "KR", selected: isKorean)
-        krBtn.frame = NSRect(x: contentWidth - 28, y: 18, width: 32, height: 22)
-        krBtn.target = self
-        krBtn.action = #selector(switchToKR)
-        headerContainer.addSubview(krBtn)
-
         elements.append((headerContainer, 52))
 
         // Separator after header
@@ -903,8 +843,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let statusColor: NSColor = !hasEnv ? .orange : (running ? .systemGreen : .systemRed)
         let statusText = !hasEnv
-            ? L("Setup Required", "설정 필요")
-            : (running ? L("Running", "실행 중") : L("Stopped", "중지됨"))
+            ? "Setup Required"
+            : (running ? "Running" : "Stopped")
 
         let dot = StatusDot(color: statusColor)
         dot.frame = NSRect(x: 16, y: 15, width: 20, height: 20)
@@ -926,13 +866,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             var usageItems: [(String, Double, String)] = []
             if let fh = usage.fiveHour {
-                usageItems.append((L("Session (5hr)", "세션 (5시간)"), fh.utilization, formatResetTime(fh.resetsAt)))
+                usageItems.append(("Session (5hr)", fh.utilization, formatResetTime(fh.resetsAt)))
             }
             if let sd = usage.sevenDay {
-                usageItems.append((L("Weekly (7 day)", "주간 (7일)"), sd.utilization, formatResetTime(sd.resetsAt)))
+                usageItems.append(("Weekly (7 day)", sd.utilization, formatResetTime(sd.resetsAt)))
             }
             if let ss = usage.sevenDaySonnet {
-                usageItems.append((L("Weekly Sonnet", "주간 Sonnet"), ss.utilization, formatResetTime(ss.resetsAt)))
+                usageItems.append(("Weekly Sonnet", ss.utilization, formatResetTime(ss.resetsAt)))
             }
 
             let itemHeight: CGFloat = 44
@@ -990,11 +930,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let fetched = usageLastFetched {
                 let ago = Int(Date().timeIntervalSince(fetched))
                 if ago < 60 {
-                    lastFetchedText = L("Updated just now", "방금 갱신됨")
+                    lastFetchedText = "Updated just now"
                 } else if ago < 3600 {
-                    lastFetchedText = L("Updated \(ago / 60)m ago", "\(ago / 60)분 전 갱신")
+                    lastFetchedText = "Updated \(ago / 60)m ago"
                 } else {
-                    lastFetchedText = L("Updated \(ago / 3600)h ago", "\(ago / 3600)시간 전 갱신")
+                    lastFetchedText = "Updated \(ago / 3600)h ago"
                 }
             }
             if !lastFetchedText.isEmpty {
@@ -1022,7 +962,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Cache stays as fallback. Manual refresh asks Claude itself to refresh usage data.
             let fetchBtn = createStyledButton(
-                title: L("Load Usage Info", "사용량 정보 불러오기"), width: contentWidth,
+                title: "Load Usage Info", width: contentWidth,
                 bgColor: NSColor(white: 0.5, alpha: 0.08), fgColor: .secondaryLabelColor
             )
             fetchBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 30)
@@ -1036,7 +976,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let controlContainer = NSView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 40))
             if running {
                 let stopBtn = createStyledButton(
-                    title: L("Stop Bot", "봇 중지"), width: halfWidth,
+                    title: "Stop Bot", width: halfWidth,
                     bgColor: NSColor.systemRed.withAlphaComponent(0.12), fgColor: .systemRed
                 )
                 stopBtn.frame = NSRect(x: 0, y: 0, width: halfWidth, height: 36)
@@ -1045,7 +985,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 controlContainer.addSubview(stopBtn)
 
                 let restartBtn = createStyledButton(
-                    title: L("Restart Bot", "봇 재시작"), width: halfWidth,
+                    title: "Restart Bot", width: halfWidth,
                     bgColor: NSColor.systemOrange.withAlphaComponent(0.12), fgColor: .systemOrange
                 )
                 restartBtn.frame = NSRect(x: halfWidth + 10, y: 0, width: halfWidth, height: 36)
@@ -1054,7 +994,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 controlContainer.addSubview(restartBtn)
             } else {
                 let startBtn = createStyledButton(
-                    title: L("Start Bot", "봇 시작"), width: contentWidth,
+                    title: "Start Bot", width: contentWidth,
                     bgColor: NSColor.systemGreen.withAlphaComponent(0.15), fgColor: .systemGreen
                 )
                 startBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 36)
@@ -1067,7 +1007,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Settings button
         let settingsBtn = createStyledButton(
-            title: L("Settings...", "설정..."), width: contentWidth,
+            title: "Settings...", width: contentWidth,
             bgColor: NSColor.systemBlue.withAlphaComponent(0.12), fgColor: .systemBlue
         )
         settingsBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 36)
@@ -1079,7 +1019,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Log & Folder buttons
             let utilContainer = NSView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 40))
             let logBtn = createStyledButton(
-                title: L("View Log", "로그 보기"), width: halfWidth,
+                title: "View Log", width: halfWidth,
                 bgColor: NSColor(white: 0.5, alpha: 0.1), fgColor: .labelColor
             )
             logBtn.frame = NSRect(x: 0, y: 0, width: halfWidth, height: 36)
@@ -1088,7 +1028,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             utilContainer.addSubview(logBtn)
 
             let folderBtn = createStyledButton(
-                title: L("Open Folder", "폴더 열기"), width: halfWidth,
+                title: "Open Folder", width: halfWidth,
                 bgColor: NSColor(white: 0.5, alpha: 0.1), fgColor: .labelColor
             )
             folderBtn.frame = NSRect(x: halfWidth + 10, y: 0, width: halfWidth, height: 36)
@@ -1103,13 +1043,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         elements.append((createSeparator(width: contentWidth), 12))
 
         // Skip Permissions checkbox (dangerous)
-        let skipPermsBtn = NSButton(checkboxWithTitle: L("Skip Permissions (⚠️ dangerous)", "권한 건너뛰기 (⚠️ 위험)"), target: self, action: #selector(toggleSkipPermissions))
+        let skipPermsBtn = NSButton(checkboxWithTitle: "Skip Permissions (⚠️ dangerous)", target: self, action: #selector(toggleSkipPermissions))
         skipPermsBtn.state = isSkipPermissionsEnabled() ? .on : .off
         skipPermsBtn.font = NSFont.systemFont(ofSize: 12)
         elements.append((skipPermsBtn, 26))
 
         // Auto-start checkbox
-        let autoStartBtn = NSButton(checkboxWithTitle: L("Launch on System Startup", "시스템 시작 시 자동 실행"), target: self, action: #selector(toggleAutoStart))
+        let autoStartBtn = NSButton(checkboxWithTitle: "Launch on System Startup", target: self, action: #selector(toggleAutoStart))
         autoStartBtn.state = isAutoStartEnabled() ? .on : .off
         autoStartBtn.font = NSFont.systemFont(ofSize: 12)
         elements.append((autoStartBtn, 26))
@@ -1117,7 +1057,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Update button
         if updateAvailable {
             let updateBtn = createStyledButton(
-                title: L("Update Available - Click to Update", "업데이트 가능 - 클릭하여 업데이트"), width: contentWidth,
+                title: "Update Available - Click to Update", width: contentWidth,
                 bgColor: .systemBlue, fgColor: .white
             )
             updateBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 36)
@@ -1126,7 +1066,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             elements.append((updateBtn, 44))
         } else {
             let checkUpdateBtn = createStyledButton(
-                title: L("Check for Updates", "업데이트 확인"), width: contentWidth,
+                title: "Check for Updates", width: contentWidth,
                 bgColor: NSColor(white: 0.5, alpha: 0.1), fgColor: .labelColor
             )
             checkUpdateBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 36)
@@ -1139,10 +1079,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         elements.append((createSeparator(width: contentWidth), 12))
 
         // Info message
-        let infoLabel = NSTextField(wrappingLabelWithString: L(
-            "Closing this window does not stop the bot.\nThe bot runs in the background. Check the menu bar icon for status.",
-            "이 창을 닫아도 봇은 중지되지 않습니다.\n봇은 백그라운드에서 실행됩니다. 메뉴바 아이콘에서 상태를 확인하세요."
-        ))
+        let infoLabel = NSTextField(wrappingLabelWithString: "Closing this window does not stop the bot.\nThe bot runs in the background. Check the menu bar icon for status.")
         infoLabel.font = NSFont.systemFont(ofSize: 11)
         infoLabel.textColor = .tertiaryLabelColor
         infoLabel.preferredMaxLayoutWidth = contentWidth
@@ -1150,7 +1087,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Quit button
         let quitBtn = createStyledButton(
-            title: L("Quit Bot", "봇 종료"), width: contentWidth,
+            title: "Quit Bot", width: contentWidth,
             bgColor: NSColor(white: 0.5, alpha: 0.08), fgColor: .secondaryLabelColor
         )
         quitBtn.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 36)
@@ -1175,7 +1112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Issues link
         let issueButton = NSButton(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 20))
-        issueButton.title = L("Bug Report / Feature Request (GitHub Issues)", "버그 신고 / 기능 요청 (GitHub Issues)")
+        issueButton.title = "Bug Report / Feature Request (GitHub Issues)"
         issueButton.bezelStyle = .inline
         issueButton.isBordered = false
         issueButton.font = NSFont.systemFont(ofSize: 11)
@@ -1186,10 +1123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         elements.append((issueButton, 22))
 
         // Star request
-        let starLabel = NSTextField(labelWithString: L(
-            "If you find this useful, please give it a Star on GitHub!",
-            "유용하셨다면 GitHub에서 Star를 눌러주세요!"
-        ))
+        let starLabel = NSTextField(labelWithString: "If you find this useful, please give it a Star on GitHub!")
         starLabel.font = NSFont.systemFont(ofSize: 10)
         starLabel.textColor = .tertiaryLabelColor
         starLabel.alignment = .center
@@ -1241,25 +1175,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         btn.contentTintColor = fgColor
         // Hover cursor
         btn.addCursorRect(btn.bounds, cursor: .pointingHand)
-        return btn
-    }
-
-    private func createLangButton(title: String, selected: Bool) -> NSButton {
-        let btn = NSButton(frame: NSRect(x: 0, y: 0, width: 32, height: 22))
-        btn.title = title
-        btn.bezelStyle = .inline
-        btn.isBordered = false
-        btn.wantsLayer = true
-        btn.font = NSFont.systemFont(ofSize: 11, weight: selected ? .bold : .regular)
-        if selected {
-            btn.contentTintColor = .white
-            btn.layer?.backgroundColor = NSColor.systemBlue.cgColor
-            btn.layer?.cornerRadius = 4
-        } else {
-            btn.contentTintColor = .secondaryLabelColor
-            btn.layer?.backgroundColor = NSColor(white: 0.5, alpha: 0.1).cgColor
-            btn.layer?.cornerRadius = 4
-        }
         return btn
     }
 
@@ -1324,14 +1239,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
 
         let alert = NSAlert()
-        alert.messageText = L("Claude Discord Bot Settings", "Claude Discord Bot 설정")
-        alert.informativeText = L(
-            "Please fill in the required fields.",
-            "필수 항목을 입력해주세요."
-        )
+        alert.messageText = "Claude Discord Bot Settings"
+        alert.informativeText = "Please fill in the required fields."
         alert.alertStyle = .informational
-        alert.addButton(withTitle: L("Save", "저장"))
-        alert.addButton(withTitle: L("Cancel", "취소"))
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
 
         let width: CGFloat = 400
         let fieldHeight: CGFloat = 24
@@ -1339,15 +1251,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let spacing: CGFloat = 8
         let browseButtonWidth: CGFloat = 80
         let fields: [(label: String, key: String, placeholder: String, defaultValue: String)] = [
-            (L("Discord Bot Token:", "Discord 봇 토큰:"), "DISCORD_BOT_TOKEN",
-             L("Paste your bot token here", "봇 토큰을 여기에 붙여넣으세요"), ""),
-            (L("Discord Guild ID (Server ID):", "Discord Guild ID (서버 ID):"), "DISCORD_GUILD_ID",
-             L("Right-click server > Copy Server ID", "서버 우클릭 > 서버 ID 복사"), ""),
-            (L("Allowed User IDs (comma-separated):", "허용된 사용자 ID (쉼표로 구분):"), "ALLOWED_USER_IDS",
-             L("e.g. 123456789,987654321", "예: 123456789,987654321"), ""),
-            (L("Base Project Directory:", "기본 프로젝트 디렉토리:"), "BASE_PROJECT_DIR",
-             L("e.g. /Users/you/projects", "예: /Users/you/projects"), ""),
-            (L("Rate Limit Per Minute:", "분당 요청 제한:"), "RATE_LIMIT_PER_MINUTE", "10", "10"),
+            ("Discord Bot Token:", "DISCORD_BOT_TOKEN",
+             "Paste your bot token here", ""),
+            ("Discord Guild ID (Server ID):", "DISCORD_GUILD_ID",
+             "Right-click server > Copy Server ID", ""),
+            ("Allowed User IDs (comma-separated):", "ALLOWED_USER_IDS",
+             "e.g. 123456789,987654321", ""),
+            ("Base Project Directory:", "BASE_PROJECT_DIR",
+             "e.g. /Users/you/projects", ""),
+            ("Rate Limit Per Minute:", "RATE_LIMIT_PER_MINUTE", "10", "10"),
         ]
 
         // Setup guide link + fields height + Show Cost radio row
@@ -1363,7 +1275,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Clickable setup guide link
         y -= linkHeight
         let linkButton = NSButton(frame: NSRect(x: 0, y: y, width: width, height: linkHeight))
-        linkButton.title = L("Open Setup Guide", "설정 가이드 열기")
+        linkButton.title = "Open Setup Guide"
         linkButton.bezelStyle = .inline
         linkButton.isBordered = false
         linkButton.font = NSFont.systemFont(ofSize: 12)
@@ -1374,7 +1286,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         y -= linkHeight
         let issueLink = NSButton(frame: NSRect(x: 0, y: y, width: width, height: linkHeight))
-        issueLink.title = L("Bug Report / Feature Request (GitHub Issues)", "버그 신고 / 기능 요청 (GitHub Issues)")
+        issueLink.title = "Bug Report / Feature Request (GitHub Issues)"
         issueLink.bezelStyle = .inline
         issueLink.isBordered = false
         issueLink.font = NSFont.systemFont(ofSize: 12)
@@ -1408,7 +1320,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 textFields[field.key] = input
 
                 let browseBtn = NSButton(frame: NSRect(x: width - browseButtonWidth, y: y, width: browseButtonWidth, height: fieldHeight))
-                browseBtn.title = L("Browse...", "찾아보기...")
+                browseBtn.title = "Browse..."
                 browseBtn.bezelStyle = .rounded
                 browseBtn.target = self
                 browseBtn.action = #selector(browseFolderClicked(_:))
@@ -1419,7 +1331,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 input.placeholderString = field.placeholder
 
                 if field.key == "DISCORD_BOT_TOKEN" && currentValue.count > 10 {
-                    input.placeholderString = "****" + String(currentValue.suffix(6)) + L(" (enter full token to change)", " (변경하려면 전체 토큰 입력)")
+                    input.placeholderString = "****" + String(currentValue.suffix(6)) + " (enter full token to change)"
                     input.stringValue = ""
                 } else if !currentValue.isEmpty {
                     input.stringValue = currentValue
@@ -1436,20 +1348,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Show Cost radio buttons
         y -= labelHeight
-        let showCostLabel = NSTextField(labelWithString: L("Show Cost:", "비용 표시:"))
+        let showCostLabel = NSTextField(labelWithString: "Show Cost:")
         showCostLabel.frame = NSRect(x: 0, y: y, width: width, height: labelHeight)
         showCostLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         accessory.addSubview(showCostLabel)
 
         y -= fieldHeight
-        let showCostTrue = NSButton(checkboxWithTitle: L("true (show cost)", "true (비용 표시)"), target: self, action: #selector(radioToggled(_:)))
+        let showCostTrue = NSButton(checkboxWithTitle: "true (show cost)", target: self, action: #selector(radioToggled(_:)))
         showCostTrue.setButtonType(.radio)
         showCostTrue.frame = NSRect(x: 0, y: y, width: width / 2, height: fieldHeight)
         showCostTrue.font = NSFont.systemFont(ofSize: 12)
         showCostTrue.tag = 1001
         accessory.addSubview(showCostTrue)
 
-        let showCostFalse = NSButton(checkboxWithTitle: L("false (Max plan)", "false (Max 요금제)"), target: self, action: #selector(radioToggled(_:)))
+        let showCostFalse = NSButton(checkboxWithTitle: "false (Max plan)", target: self, action: #selector(radioToggled(_:)))
         showCostFalse.setButtonType(.radio)
         showCostFalse.frame = NSRect(x: width / 2, y: y, width: width / 2, height: fieldHeight)
         showCostFalse.font = NSFont.systemFont(ofSize: 12)
@@ -1468,10 +1380,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Note about Max plan
         y -= noteHeight
-        let noteLabel = NSTextField(labelWithString: L(
-            "* Max plan users should set Show Cost to false",
-            "* Max 요금제 사용자는 Show Cost를 false로 설정하세요"
-        ))
+        let noteLabel = NSTextField(labelWithString: "* Max plan users should set Show Cost to false")
         noteLabel.frame = NSRect(x: 0, y: y, width: width, height: noteHeight)
         noteLabel.font = NSFont.systemFont(ofSize: 10)
         noteLabel.textColor = .secondaryLabelColor
@@ -1494,22 +1403,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             newEnv["SHOW_COST"] = showCostTrue.state == .on ? "true" : "false"
 
-            // 필수 체크
+            // Required check
             if (newEnv["DISCORD_BOT_TOKEN"] ?? "").isEmpty ||
                (newEnv["DISCORD_GUILD_ID"] ?? "").isEmpty ||
                (newEnv["ALLOWED_USER_IDS"] ?? "").isEmpty {
                 let errAlert = NSAlert()
-                errAlert.messageText = L("Required Fields Missing", "필수 항목 누락")
-                errAlert.informativeText = L(
-                    "Bot Token, Guild ID (Server ID), and User IDs are required.",
-                    "Bot Token, Guild ID (서버 ID), User IDs는 필수 항목입니다."
-                )
+                errAlert.messageText = "Required Fields Missing"
+                errAlert.informativeText = "Bot Token, Guild ID (Server ID), and User IDs are required."
                 errAlert.alertStyle = .warning
                 errAlert.runModal()
                 return
             }
 
-            // .env 파일 쓰기
+            // Write .env file
             var content = ""
             for field in fields {
                 content += "\(field.key)=\(newEnv[field.key] ?? "")\n"
@@ -1545,8 +1451,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = L("Select", "선택")
-        panel.message = L("Select Base Project Directory", "기본 프로젝트 디렉토리 선택")
+        panel.prompt = "Select"
+        panel.message = "Select Base Project Directory"
         if panel.runModal() == .OK, let url = panel.url {
             if let field = objc_getAssociatedObject(sender, &associatedFieldKey) as? NSTextField {
                 field.stringValue = url.path
@@ -1581,15 +1487,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !currentlyOn {
             // Confirm only when turning ON (false → true).
             let alert = NSAlert()
-            alert.messageText = L("Enable Skip Permissions?",
-                                  "권한 건너뛰기를 활성화하시겠습니까?")
-            alert.informativeText = L(
-                "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?",
-                "권한 건너뛰기를 켜면 Claude가 파일 쓰기, 셸 명령, 네트워크 호출을 포함한 모든 도구를 확인 없이 실행합니다. 계속할까요?"
-            )
+            alert.messageText = "Enable Skip Permissions?"
+            alert.informativeText = "Skip Permissions lets Claude run any tool — including file writes, shell commands, and network calls — without confirmation. Continue?"
             alert.alertStyle = .warning
-            alert.addButton(withTitle: L("Cancel", "취소"))
-            alert.addButton(withTitle: L("Enable", "활성화"))
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Enable")
             let response = alert.runModal()
             // First button (Cancel) → .alertFirstButtonReturn
             // Second button (Enable) → .alertSecondButtonReturn
