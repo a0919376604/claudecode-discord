@@ -125,7 +125,7 @@ if [ -f "$SCRIPT_DIR/menubar/ClaudeBotMenu.swift" ]; then
             }
         fi
         echo "🔨 Building menu bar app..."
-        swiftc -o "$MENUBAR" "$SCRIPT_DIR/menubar/ClaudeBotMenu.swift" -framework Cocoa
+        (cd "$SCRIPT_DIR/menubar" && swift build -c release && ln -sfn "$(pwd)/.build/release/ClaudeBotMenu" ./ClaudeBotMenu)
     fi
 fi
 
