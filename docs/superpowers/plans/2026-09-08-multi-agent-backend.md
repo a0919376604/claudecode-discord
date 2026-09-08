@@ -803,6 +803,7 @@ const runBackend = (useResume: boolean) =>
     resumeSessionId: useResume ? resumeSessionId : undefined,
     skipPermissions: isSkipPermissionsEnabled(),
     channelId,
+    channel,   // NEW required field — see ledger Ruling R2 (Task 4 fix round 1)
     model: getConfig().CLAUDE_MODEL,
   });
 
