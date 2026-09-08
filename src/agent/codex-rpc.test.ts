@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { encodeFrame, FrameDecoder } from "./codex-rpc.js";
+import { Duplex } from "node:stream";
+import { encodeFrame, FrameDecoder, CodexRpc } from "./codex-rpc.js";
 
 describe("encodeFrame", () => {
   it("produces LSP-style frame with correct Content-Length", () => {
@@ -65,5 +66,87 @@ describe("FrameDecoder", () => {
     const bytes = Buffer.byteLength(body, "utf-8");
     const frame = Buffer.from(`Content-Type: application/json\r\nContent-Length: ${bytes}\r\n\r\n${body}`);
     expect(dec.push(frame)).toEqual([{ id: 9 }]);
+  });
+});
+
+function makeStreamPair() {
+  const client = new Duplex({
+    read() {},
+    write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
+      setImmediate(() => { server.push(chunk); });
+      cb();
+    },
+  });
+  const server = new Duplex({
+    read() {},
+    write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
+      setImmediate(() => { client.push(chunk); });
+      cb();
+    },
+  });
+  return { client, server };
+}
+
+describe("CodexRpc.request", () => {
+  it("pairs response to request by id and resolves promise", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const serverDecoder = new FrameDecoder();
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of serverDecoder.push(chunk)) {
+        const req = msg as { id: number; method: string };
+        // Echo a success response back to client via write()
+        server.write(encodeFrame({ jsonrpc: "2.0", id: req.id, result: { got: req.method } }));
+      }
+    });
+
+    const result = await rpc.request("ping");
+    expect(result).toEqual({ got: "ping" });
+    rpc.close();
+  });
+
+  it("rejects on server error response", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const dec = new FrameDecoder();
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of dec.push(chunk)) {
+        const req = msg as { id: number };
+        server.write(encodeFrame({ jsonrpc: "2.0", id: req.id, error: { code: -1, message: "boom" } }));
+      }
+    });
+    await expect(rpc.request("bad")).rejects.toThrow("boom");
+    rpc.close();
+  });
+
+  it("assigns unique ascending ids to concurrent requests", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const dec = new FrameDecoder();
+    const receivedIds: number[] = [];
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of dec.push(chunk)) {
+        const req = msg as { id: number };
+        receivedIds.push(req.id);
+        server.write(encodeFrame({ jsonrpc: "2.0", id: req.id, result: "ok" }));
+      }
+    });
+    await Promise.all([rpc.request("a"), rpc.request("b"), rpc.request("c")]);
+    expect(new Set(receivedIds).size).toBe(3);
+    rpc.close();
+  });
+
+  it("notify() sends without id and does not create a pending entry", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const dec = new FrameDecoder();
+    let received: { id?: number; method?: string } | null = null;
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of dec.push(chunk)) received = msg as { id?: number; method?: string };
+    });
+    rpc.notify("hello", { x: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toEqual({ jsonrpc: "2.0", method: "hello", params: { x: 1 } });
+    rpc.close();
   });
 });
