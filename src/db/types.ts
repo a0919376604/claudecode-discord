@@ -6,6 +6,7 @@ export interface Project {
   guild_id: string;
   auto_approve: number; // 0 or 1
   source_path: string | null; // NULL for /register, absolute path for /worktree
+  backend: "claude" | "codex";
   created_at: string;
 }
 
