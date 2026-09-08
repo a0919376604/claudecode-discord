@@ -263,13 +263,13 @@ export function createAskUserQuestionEmbed(
 
 export function createResultEmbed(
   result: string,
-  costUsd: number,
+  costUsd: number | undefined,
   durationMs: number,
   showCost: boolean = true,
   isError: boolean = false,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
-  const footer = showCost
+  const footer = showCost && costUsd !== undefined
     ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}  |  ${L("Duration", "소요 시간")} : ${duration}`
     : `${L("Duration", "소요 시간")} : ${duration}`;
 

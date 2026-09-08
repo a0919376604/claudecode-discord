@@ -464,7 +464,7 @@ class SessionManager {
                 }
                 const resultEmbed = createResultEmbed(
                   resultText,
-                  event.costUsd ?? 0,
+                  event.costUsd,
                   Date.now() - startTime,
                   getConfig().SHOW_COST,
                   isError,
@@ -532,7 +532,7 @@ class SessionManager {
 
       const resultEmbed = createResultEmbed(
         errMsg,
-        0,
+        undefined,
         Date.now() - startTime,
         getConfig().SHOW_COST,
         true,
