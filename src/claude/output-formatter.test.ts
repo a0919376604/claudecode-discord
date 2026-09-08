@@ -242,6 +242,20 @@ describe("createResultEmbed", () => {
     expect(footer).not.toContain("Cost");
     expect(footer).toContain("Duration");
   });
+
+  it("hides cost when costUsd is undefined, even if showCost is true", () => {
+    const embed = createResultEmbed("Done", undefined, 5000, true);
+    const footer = embed.data.footer?.text ?? "";
+    expect(footer).not.toContain("Cost");
+    expect(footer).toContain("Duration : 5.0s");
+  });
+
+  it("shows only duration when costUsd is undefined and showCost is false", () => {
+    const embed = createResultEmbed("Done", undefined, 5000, false);
+    const footer = embed.data.footer?.text ?? "";
+    expect(footer).not.toContain("Cost");
+    expect(footer).toContain("Duration : 5.0s");
+  });
 });
 
 // ─── createAskUserQuestionEmbed ───

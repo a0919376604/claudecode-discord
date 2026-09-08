@@ -78,6 +78,12 @@ export function initDatabase(): void {
   if (!cols.some((c) => c.name === "source_path")) {
     db.exec("ALTER TABLE projects ADD COLUMN source_path TEXT");
   }
+
+  // Migration: add backend column for multi-agent support.
+  // Safe to re-run; only ALTERs when the column is missing.
+  if (!cols.some((c) => c.name === "backend")) {
+    db.exec("ALTER TABLE projects ADD COLUMN backend TEXT NOT NULL DEFAULT 'claude'");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -133,6 +139,16 @@ export function setAutoApprove(
 ): void {
   db.prepare("UPDATE projects SET auto_approve = ? WHERE channel_id = ?").run(
     autoApprove ? 1 : 0,
+    channelId,
+  );
+}
+
+export function setBackend(
+  channelId: string,
+  backend: "claude" | "codex",
+): void {
+  db.prepare("UPDATE projects SET backend = ? WHERE channel_id = ?").run(
+    backend,
     channelId,
   );
 }

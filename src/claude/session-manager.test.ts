@@ -260,6 +260,7 @@ describe("query env injection", () => {
       guild_id: "g",
       auto_approve: 0,
       source_path: null,
+      backend: "claude",
       created_at: "",
     });
     // query() yields nothing then returns — sendMessage will see hasResult=false
@@ -295,6 +296,7 @@ describe("sendMessage finally — wakeup queue drain", () => {
       guild_id: "g",
       auto_approve: 0,
       source_path: null,
+      backend: "claude",
       created_at: "",
     });
     vi.mocked(query).mockImplementation((() => {

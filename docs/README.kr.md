@@ -147,6 +147,8 @@ claudecode-discord/
 | `/queue list` | 대기 중인 메시지 목록 확인 (개별 또는 전체 취소) | |
 | `/queue clear` | 대기 중인 메시지 모두 취소 | |
 | `/clear-sessions` | 해당 프로젝트의 모든 세션 일괄 삭제 | |
+| `/claude` | 현재 채널의 백엔드를 Claude Code로 전환 | |
+| `/codex` | 현재 채널의 백엔드를 OpenAI Codex CLI로 전환 | |
 
 `/register` 명령어는 `BASE_PROJECT_DIR` 하위 폴더를 **자동완성 드롭다운**으로 표시합니다 — 타이핑하면 필터링되어 선택할 수 있습니다.
 첫 번째 옵션 `.`은 베이스 디렉토리 자체를 등록합니다. 직접 경로를 입력해도 되며, 절대 경로도 사용 가능합니다.

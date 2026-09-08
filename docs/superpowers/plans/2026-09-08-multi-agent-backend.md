@@ -803,6 +803,7 @@ const runBackend = (useResume: boolean) =>
     resumeSessionId: useResume ? resumeSessionId : undefined,
     skipPermissions: isSkipPermissionsEnabled(),
     channelId,
+    channel,   // NEW required field — see ledger Ruling R2 (Task 4 fix round 1)
     model: getConfig().CLAUDE_MODEL,
   });
 
@@ -2402,26 +2403,35 @@ export class CodexBackend implements AgentBackend {
     });
     this.rpc.notify("initialized", {});
 
-    // Start or resume thread
+    // Start or resume thread.
+    //
+    // NOTE: opts.model is intentionally NOT forwarded to codex. Per spec
+    // §6.2(d), codex reads its model from ~/.codex/config.toml. The
+    // `model` field in BackendStartOptions is Claude-specific
+    // (sourced from CLAUDE_MODEL env var); passing a Claude model string
+    // like "claude-sonnet-4-5" to codex would fail.
     if (opts.resumeSessionId) {
       await this.rpc.request("thread/resume", { threadId: opts.resumeSessionId });
       this.threadId = opts.resumeSessionId;
     } else {
+      // NOTE (Ruling R3): codex app-server returns `result.thread.id`,
+      // NOT `result.threadId`. Empirically verified by scripts/codex-rpc-demo.mjs.
       const res = (await this.rpc.request("thread/start", {
         cwd: opts.cwd,
         sandbox: opts.skipPermissions ? "danger-full-access" : "workspace-write",
-        ...(opts.model ? { model: opts.model } : {}),
-      })) as { threadId: string };
-      this.threadId = res.threadId;
+      })) as { thread: { id: string } };
+      this.threadId = res.thread.id;
     }
     yield { type: "session_init", sessionId: this.threadId };
 
-    // Start turn
+    // Start turn.
+    // NOTE (Ruling R3): codex app-server returns `result.turn.id`,
+    // NOT `result.turnId`. Empirically verified by scripts/codex-rpc-demo.mjs.
     const turnRes = (await this.rpc.request("turn/start", {
       threadId: this.threadId,
       input: [{ type: "text", text: opts.prompt }],
-    })) as { turnId: string };
-    this.turnId = turnRes.turnId;
+    })) as { turn: { id: string } };
+    this.turnId = turnRes.turn.id;
 
     // Main loop: consume notifications + queued approval events
     const notifIter = this.rpc.notifications();

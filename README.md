@@ -148,6 +148,8 @@ claudecode-discord/
 | `/queue list` | View queued messages (cancel individually or all) | |
 | `/queue clear` | Cancel all queued messages | |
 | `/clear-sessions` | Delete all session files for the project | |
+| `/claude` | Switch this channel to use Claude Code backend | |
+| `/codex` | Switch this channel to use OpenAI Codex CLI backend | |
 
 ### `/devsync` — Control local Mutagen sync sessions
 
