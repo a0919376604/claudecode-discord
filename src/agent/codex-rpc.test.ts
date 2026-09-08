@@ -3,23 +3,18 @@ import { Duplex } from "node:stream";
 import { encodeFrame, FrameDecoder, CodexRpc } from "./codex-rpc.js";
 
 describe("encodeFrame", () => {
-  it("produces LSP-style frame with correct Content-Length", () => {
-    const buf = encodeFrame({ jsonrpc: "2.0", id: 1, method: "test" });
+  it("produces expected NDJSON frame (JSON + newline)", () => {
+    const payload = { jsonrpc: "2.0", id: 1, method: "test" };
+    const buf = encodeFrame(payload);
     const text = buf.toString("utf-8");
-    expect(text).toMatch(/^Content-Length: \d+\r\n\r\n\{/);
-    const bodyStart = text.indexOf("\r\n\r\n") + 4;
-    const body = text.slice(bodyStart);
-    const clMatch = text.match(/Content-Length: (\d+)/);
-    expect(Number(clMatch![1])).toBe(Buffer.byteLength(body, "utf-8"));
-    expect(JSON.parse(body)).toEqual({ jsonrpc: "2.0", id: 1, method: "test" });
+    expect(text).toBe(JSON.stringify(payload) + "\n");
+    expect(JSON.parse(text.trimEnd())).toEqual(payload);
   });
 
   it("uses byte length not char length for multibyte content", () => {
-    const buf = encodeFrame({ msg: "你好" });
-    const text = buf.toString("utf-8");
-    const clMatch = text.match(/Content-Length: (\d+)/);
-    const body = text.slice(text.indexOf("\r\n\r\n") + 4);
-    expect(Number(clMatch![1])).toBe(Buffer.byteLength(body, "utf-8"));
+    const payload = { msg: "你好" };
+    const buf = encodeFrame(payload);
+    expect(buf.byteLength).toBe(Buffer.byteLength(JSON.stringify(payload) + "\n", "utf-8"));
   });
 });
 
@@ -31,20 +26,20 @@ describe("FrameDecoder", () => {
     expect(messages).toEqual([{ id: 1, method: "hi" }]);
   });
 
-  it("buffers when frame arrives in multiple chunks (header split)", () => {
+  it("buffers when frame arrives in multiple chunks (line split, first chunk has no newline)", () => {
     const dec = new FrameDecoder();
     const frame = encodeFrame({ id: 2 });
-    // Split mid-header
+    // Split mid-JSON (before the trailing newline)
     expect(dec.push(frame.slice(0, 5))).toEqual([]);
     expect(dec.push(frame.slice(5))).toEqual([{ id: 2 }]);
   });
 
-  it("buffers when frame arrives in multiple chunks (body split)", () => {
+  it("buffers when frame arrives in multiple chunks (split deep into JSON body)", () => {
     const dec = new FrameDecoder();
     const frame = encodeFrame({ id: 3, method: "long method name here" });
-    const headerEnd = frame.indexOf(Buffer.from("\r\n\r\n")) + 4;
-    expect(dec.push(frame.slice(0, headerEnd + 3))).toEqual([]);
-    expect(dec.push(frame.slice(headerEnd + 3))).toEqual([{ id: 3, method: "long method name here" }]);
+    const mid = Math.floor(frame.byteLength / 2);
+    expect(dec.push(frame.slice(0, mid))).toEqual([]);
+    expect(dec.push(frame.slice(mid))).toEqual([{ id: 3, method: "long method name here" }]);
   });
 
   it("parses multiple frames in one push", () => {
@@ -55,17 +50,15 @@ describe("FrameDecoder", () => {
 
   it("throws on invalid JSON body", () => {
     const dec = new FrameDecoder();
-    // Hand-craft invalid frame
-    const bad = Buffer.from("Content-Length: 5\r\n\r\n{oops");
+    // Hand-craft invalid NDJSON line
+    const bad = Buffer.from("{oops}\n");
     expect(() => dec.push(bad)).toThrow();
   });
 
-  it("ignores unknown headers before Content-Length", () => {
+  it("ignores blank lines between frames", () => {
     const dec = new FrameDecoder();
-    const body = '{"id":9}';
-    const bytes = Buffer.byteLength(body, "utf-8");
-    const frame = Buffer.from(`Content-Type: application/json\r\nContent-Length: ${bytes}\r\n\r\n${body}`);
-    expect(dec.push(frame)).toEqual([{ id: 9 }]);
+    const frame = Buffer.from('\n\n{"id":1}\n');
+    expect(dec.push(frame)).toEqual([{ id: 1 }]);
   });
 });
 

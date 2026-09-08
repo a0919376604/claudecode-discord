@@ -1,8 +1,5 @@
 export function encodeFrame(payload: object): Buffer {
-  const json = JSON.stringify(payload);
-  const body = Buffer.from(json, "utf-8");
-  const header = Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "utf-8");
-  return Buffer.concat([header, body]);
+  return Buffer.from(JSON.stringify(payload) + "\n", "utf-8");
 }
 
 export class FrameDecoder {
@@ -12,30 +9,16 @@ export class FrameDecoder {
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const messages: object[] = [];
 
-    while (true) {
-      const headerEnd = this.buffer.indexOf(Buffer.from("\r\n\r\n"));
-      if (headerEnd === -1) break;
-
-      const headerText = this.buffer.slice(0, headerEnd).toString("utf-8");
-      const clMatch = headerText.match(/Content-Length:\s*(\d+)/i);
-      if (!clMatch) {
-        throw new Error(`Missing Content-Length header in frame: ${headerText}`);
-      }
-      const contentLength = Number(clMatch[1]);
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + contentLength;
-
-      if (this.buffer.byteLength < bodyEnd) break;
-
-      const body = this.buffer.slice(bodyStart, bodyEnd).toString("utf-8");
-      let parsed: object;
+    let newlineIdx: number;
+    while ((newlineIdx = this.buffer.indexOf(0x0a)) !== -1) {  // 0x0a = '\n'
+      const line = this.buffer.slice(0, newlineIdx).toString("utf-8");
+      this.buffer = this.buffer.slice(newlineIdx + 1);
+      if (line.trim().length === 0) continue;  // ignore blank lines
       try {
-        parsed = JSON.parse(body);
+        messages.push(JSON.parse(line));
       } catch (e) {
         throw new Error(`Invalid JSON in frame body: ${e instanceof Error ? e.message : e}`);
       }
-      messages.push(parsed);
-      this.buffer = this.buffer.slice(bodyEnd);
     }
 
     return messages;
