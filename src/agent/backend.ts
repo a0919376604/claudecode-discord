@@ -1,3 +1,4 @@
+import type { TextChannel } from "discord.js";
 import type { AskQuestionData } from "../claude/output-formatter.js";
 
 export type NormalizedEvent =
@@ -15,6 +16,7 @@ export interface BackendStartOptions {
   resumeSessionId?: string;
   skipPermissions: boolean;
   channelId: string;
+  channel: TextChannel;
   model?: string;
 }
 

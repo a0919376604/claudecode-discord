@@ -1,8 +1,7 @@
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { TextChannel } from "discord.js";
-import { pluginRegistry, getDiscordClient } from "../bot/client.js";
+import { pluginRegistry } from "../bot/client.js";
 import { ensureFreshCredentials } from "../claude/credentials-refresher.js";
 import { createPreToolUseHook } from "../hooks/pre-tool-use.js";
 import { resolveWakeupDir } from "../wakeup/paths.js";
@@ -74,7 +73,7 @@ export class ClaudeBackend implements AgentBackend {
           PreToolUse: [{
             hooks: [createPreToolUseHook({
               channelId: opts.channelId,
-              channel: getDiscordClient().channels.cache.get(opts.channelId) as TextChannel,
+              channel: opts.channel,
               now: () => Date.now(),
             })],
           }],
