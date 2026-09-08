@@ -3,6 +3,7 @@ package-lock.json
 dist/
 .env
 *.db
+.worktrees/
 *.db-shm
 *.db-wal
 .claude/
