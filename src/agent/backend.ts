@@ -8,6 +8,10 @@ export type NormalizedEvent =
   | { type: "tool_end"; toolName: string; ok: boolean }
   | { type: "result"; text: string; costUsd?: number; isError: boolean }
   | { type: "tool_approval_request"; requestId: string; toolName: string; input: Record<string, unknown> }
+  // AskUserQuestion — only Claude backend emits this. Codex has no
+  // equivalent; if a Claude-native skill triggers AskUserQuestion while
+  // running under codex (should not happen — skills are installed per-project),
+  // codex will ignore it.
   | { type: "ask_question_request"; requestId: string; questions: AskQuestionData[] };
 
 export interface BackendStartOptions {

@@ -186,9 +186,8 @@ export class CodexBackend implements AgentBackend {
     resolver(decision);
   }
 
-  respondToQuestion(_requestId: string, _answers: Record<string, string>): void {
-    // Codex has no AskUserQuestion equivalent — no-op.
-    // See M4 Task 20 for the warning UX when a Claude skill triggers it under codex.
+  respondToQuestion(requestId: string, _answers: Record<string, string>): void {
+    console.warn(`[codex-backend] respondToQuestion called with requestId=${requestId} but codex does not support AskUserQuestion. Ignored.`);
   }
 
   isResumeStaleError(error: unknown): boolean {
