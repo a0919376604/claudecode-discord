@@ -26,9 +26,38 @@ describe("notificationToEvent", () => {
     expect(notificationToEvent(n)).toMatchObject({ type: "tool_start", toolName: "Write" });
   });
 
-  it("translates turn/completed success to result", () => {
-    const n = { method: "turn/completed", params: { finalMessage: "done" } };
-    expect(notificationToEvent(n)).toEqual({ type: "result", text: "done", isError: false });
+  it("returns null for item/started with userMessage type", () => {
+    const n = { method: "item/started", params: { item: { type: "userMessage", content: "hi" } } };
+    expect(notificationToEvent(n)).toBeNull();
+  });
+
+  it("returns null for item/started with agentMessage type", () => {
+    const n = { method: "item/started", params: { item: { type: "agentMessage" } } };
+    expect(notificationToEvent(n)).toBeNull();
+  });
+
+  it("returns null for item/started with reasoning type", () => {
+    const n = { method: "item/started", params: { item: { type: "reasoning" } } };
+    expect(notificationToEvent(n)).toBeNull();
+  });
+
+  it("returns null for item/started with unknown item type", () => {
+    const n = { method: "item/started", params: { item: { type: "someUnknownType" } } };
+    expect(notificationToEvent(n)).toBeNull();
+  });
+
+  it("translates turn/completed success to result using accumulated text", () => {
+    const n = { method: "turn/completed", params: {} };
+    expect(notificationToEvent(n, "aggregated assistant reply")).toEqual({
+      type: "result",
+      text: "aggregated assistant reply",
+      isError: false,
+    });
+  });
+
+  it("translates turn/completed success with no accumulated text to empty result", () => {
+    const n = { method: "turn/completed", params: {} };
+    expect(notificationToEvent(n)).toEqual({ type: "result", text: "", isError: false });
   });
 
   it("translates turn/completed error to result with isError", () => {

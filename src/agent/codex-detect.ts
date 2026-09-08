@@ -19,12 +19,10 @@ export function _clearCache(): void {
 const INSTALL_HINT_EN =
   "❌ **Codex CLI not found.**\n\n" +
   "Install it first:\n```\nnpm install -g @openai/codex\n```\n" +
-  "Or with Homebrew (macOS):\n```\nbrew install codex\n```\n" +
   "[Official install docs](https://github.com/openai/codex)";
 const INSTALL_HINT_KR =
   "❌ **Codex CLI가 설치되어 있지 않습니다.**\n\n" +
   "먼저 설치하세요:\n```\nnpm install -g @openai/codex\n```\n" +
-  "또는 Homebrew (macOS):\n```\nbrew install codex\n```\n" +
   "[공식 설치 문서](https://github.com/openai/codex)";
 
 const RUN_FAIL_EN = "❌ Codex CLI is installed but not runnable. Try reinstalling.";

@@ -34,6 +34,8 @@ export class CodexBackend implements AgentBackend {
   private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
   private eventQueue: NormalizedEvent[] = [];
   private eventResolver: (() => void) | null = null;
+  /** Accumulated assistant text for the current turn (reset on each turn/completed). */
+  private currentAssistantText = "";
 
   private pushEvent(ev: NormalizedEvent): void {
     this.eventQueue.push(ev);
@@ -121,8 +123,20 @@ export class CodexBackend implements AgentBackend {
     let notifDone = false;
     (async () => {
       for await (const notif of notifIter) {
-        const ev = notificationToEvent(notif);
-        if (ev) this.pushEvent(ev);
+        // Accumulate assistant text so we can attach it to turn/completed.
+        if (notif.method === "item/agentMessage/delta") {
+          const params = notif.params as Record<string, unknown> | null | undefined;
+          if (params && typeof params.delta === "string") {
+            this.currentAssistantText += params.delta;
+          }
+        }
+        const ev = notif.method === "turn/completed"
+          ? notificationToEvent(notif, this.currentAssistantText)
+          : notificationToEvent(notif);
+        if (ev) {
+          if (ev.type === "result") this.currentAssistantText = "";
+          this.pushEvent(ev);
+        }
       }
       notifDone = true;
       if (this.eventResolver) {
