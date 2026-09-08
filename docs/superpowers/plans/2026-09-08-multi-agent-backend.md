@@ -2414,20 +2414,24 @@ export class CodexBackend implements AgentBackend {
       await this.rpc.request("thread/resume", { threadId: opts.resumeSessionId });
       this.threadId = opts.resumeSessionId;
     } else {
+      // NOTE (Ruling R3): codex app-server returns `result.thread.id`,
+      // NOT `result.threadId`. Empirically verified by scripts/codex-rpc-demo.mjs.
       const res = (await this.rpc.request("thread/start", {
         cwd: opts.cwd,
         sandbox: opts.skipPermissions ? "danger-full-access" : "workspace-write",
-      })) as { threadId: string };
-      this.threadId = res.threadId;
+      })) as { thread: { id: string } };
+      this.threadId = res.thread.id;
     }
     yield { type: "session_init", sessionId: this.threadId };
 
-    // Start turn
+    // Start turn.
+    // NOTE (Ruling R3): codex app-server returns `result.turn.id`,
+    // NOT `result.turnId`. Empirically verified by scripts/codex-rpc-demo.mjs.
     const turnRes = (await this.rpc.request("turn/start", {
       threadId: this.threadId,
       input: [{ type: "text", text: opts.prompt }],
-    })) as { turnId: string };
-    this.turnId = turnRes.turnId;
+    })) as { turn: { id: string } };
+    this.turnId = turnRes.turn.id;
 
     // Main loop: consume notifications + queued approval events
     const notifIter = this.rpc.notifications();
