@@ -184,6 +184,51 @@ Example: If `BASE_PROJECT_DIR=/Users/you/projects`, then `/register my-app` → 
 
 ---
 
+## 5-B. Codex Setup (Optional)
+
+The bot defaults to using **Claude Code** as the backend. Optionally, you can also set up **Codex** (OpenAI's code generation CLI) and switch between backends per channel.
+
+### Prerequisites
+
+Codex requires Node.js 18+ and an OpenAI API key.
+
+### Install Codex
+
+```bash
+# macOS (via Homebrew)
+brew install codex
+
+# Any platform (via npm)
+npm install -g @openai/codex
+```
+
+Verify installation:
+```bash
+codex --version
+```
+
+### Authenticate Codex
+
+```bash
+codex login
+```
+
+This opens a browser for you to authorize with your OpenAI account. Alternatively, set the API key via environment variable:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+### Switch Backends
+
+Use the slash commands to switch backends per channel:
+- `/claude` — Use Claude Code backend
+- `/codex` — Use OpenAI Codex CLI backend
+
+**Note:** Switching backends clears the current channel's session history — sessions from one backend cannot be resumed on the other.
+
+---
+
 ## 6. Run
 
 ### macOS (Background + Menu Bar)
@@ -295,6 +340,8 @@ When Claude requests file edits, creation, or command execution, buttons appear:
 | `/sessions` | List sessions to resume or delete |
 | `/clear-sessions` | Delete all sessions for the project |
 | `/usage` | Show Claude Code usage (Session 5hr / Weekly / Sonnet) |
+| `/claude` | Switch this channel to use Claude Code backend |
+| `/codex` | Switch this channel to use OpenAI Codex CLI backend |
 
 ---
 

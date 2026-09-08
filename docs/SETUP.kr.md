@@ -186,6 +186,51 @@ SHOW_COST=true
 
 ---
 
+## 5-B. Codex 설정 (선택사항)
+
+봇의 기본 백엔드는 **Claude Code**입니다. 선택으로, **Codex**(OpenAI의 코드 생성 CLI)를 설정하고 채널별로 백엔드를 전환할 수 있습니다.
+
+### 사전 요구사항
+
+Codex는 Node.js 18 이상과 OpenAI API 키가 필요합니다.
+
+### Codex 설치
+
+```bash
+# macOS (Homebrew)
+brew install codex
+
+# 모든 플랫폼 (npm)
+npm install -g @openai/codex
+```
+
+설치 확인:
+```bash
+codex --version
+```
+
+### Codex 로그인
+
+```bash
+codex login
+```
+
+브라우저가 열려 OpenAI 계정으로 인증을 진행합니다. 또는 환경변수로 API 키를 설정할 수 있습니다:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+### 백엔드 전환
+
+슬래시 명령어로 채널별로 백엔드를 전환하세요:
+- `/claude` — Claude Code 백엔드 사용
+- `/codex` — OpenAI Codex CLI 백엔드 사용
+
+**주의:** 백엔드를 전환하면 현재 채널의 세션 기록이 초기화됩니다 — 한 백엔드에서의 세션을 다른 백엔드에서 재개할 수 없습니다.
+
+---
+
 ## 6. 실행
 
 ### macOS (백그라운드 + 메뉴바)
@@ -296,6 +341,8 @@ Claude가 파일 수정/생성/명령 실행 등을 요청하면 버튼이 표�
 | `/auto-approve mode:on\|off` | 자동 승인 토글 |
 | `/sessions` | 기존 세션 목록 조회, 재개 또는 삭제 |
 | `/clear-sessions` | 해당 프로젝트의 모든 세션 일괄 삭제 |
+| `/claude` | 현재 채널의 백엔드를 Claude Code로 전환 |
+| `/codex` | 현재 채널의 백엔드를 OpenAI Codex CLI로 전환 |
 
 ---
 
