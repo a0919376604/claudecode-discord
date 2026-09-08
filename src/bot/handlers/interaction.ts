@@ -10,8 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
-import { upsertSession, getProject, getSession, clearSessionId } from "../../db/database.js";
+import { upsertSession, getProject, getSession, clearSessionId, setBackend } from "../../db/database.js";
 import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js";
+import { detectCodex } from "../../agent/codex-detect.js";
 import { L } from "../../utils/i18n.js";
 
 export async function handleButtonInteraction(
@@ -30,6 +31,44 @@ export async function handleButtonInteraction(
   const colonIndex = customId.indexOf(":");
   const action = colonIndex === -1 ? customId : customId.slice(0, colonIndex);
   const requestId = colonIndex === -1 ? "" : customId.slice(colonIndex + 1);
+
+  // Handle switch-backend confirmation buttons.
+  // customId format: switch-<target>-<channelId>-<yes|no>
+  // These do NOT use the colon separator, so handle before the !requestId guard.
+  if (customId.startsWith("switch-claude-") || customId.startsWith("switch-codex-")) {
+    const parts = customId.split("-");
+    // parts = ["switch", target, ...channelIdParts, decision]
+    const target = parts[1] as "claude" | "codex";
+    const decision = parts[parts.length - 1];
+    const channelId = parts.slice(2, -1).join("-");
+
+    if (decision === "no") {
+      await interaction.update({ content: L("Cancelled.", "취소됨."), components: [] });
+      return;
+    }
+
+    // decision === "yes"
+    clearSessionId(channelId);
+    setBackend(channelId, target);
+
+    if (target === "codex") {
+      const detect = await detectCodex();
+      if (!detect.ok) {
+        await interaction.update({ content: detect.errorMessage, components: [] });
+        return;
+      }
+    }
+
+    const displayName = target === "claude" ? "Claude" : "Codex";
+    await interaction.update({
+      content: L(
+        `✅ Switched to ${displayName}. Next message will start a fresh session.`,
+        `✅ ${displayName}로 전환됨. 다음 메시지부터 새 세션을 시작합니다.`,
+      ),
+      components: [],
+    });
+    return;
+  }
 
   if (!requestId) {
     await interaction.reply({
