@@ -12,13 +12,6 @@ describe("sdkMessageToEvent", () => {
   });
 
   it("translates assistant text blocks to text_delta events (one per block)", () => {
-    const msg = {
-      type: "assistant",
-      content: [
-        { type: "text", text: "hello " },
-        { type: "text", text: "world" },
-      ],
-    };
     // Translator returns null for multi-block; caller iterates.
     // Instead we test a helper that returns an array:
     // For MVP, translator yields ONE event per call — caller loops content[].
@@ -60,7 +53,7 @@ describe("sdkMessageToEvent", () => {
 
   it("translates result error via is_error flag", () => {
     const msg = { type: "result", is_error: true, errors: ["oops"] };
-    expect(sdkMessageToEvent(msg)?.isError).toBe(true);
+    expect(sdkMessageToEvent(msg)).toMatchObject({ isError: true });
   });
 
   it("falls back to 'Task completed' when result field missing on success", () => {
