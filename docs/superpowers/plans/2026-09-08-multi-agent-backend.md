@@ -2402,7 +2402,13 @@ export class CodexBackend implements AgentBackend {
     });
     this.rpc.notify("initialized", {});
 
-    // Start or resume thread
+    // Start or resume thread.
+    //
+    // NOTE: opts.model is intentionally NOT forwarded to codex. Per spec
+    // §6.2(d), codex reads its model from ~/.codex/config.toml. The
+    // `model` field in BackendStartOptions is Claude-specific
+    // (sourced from CLAUDE_MODEL env var); passing a Claude model string
+    // like "claude-sonnet-4-5" to codex would fail.
     if (opts.resumeSessionId) {
       await this.rpc.request("thread/resume", { threadId: opts.resumeSessionId });
       this.threadId = opts.resumeSessionId;
@@ -2410,7 +2416,6 @@ export class CodexBackend implements AgentBackend {
       const res = (await this.rpc.request("thread/start", {
         cwd: opts.cwd,
         sandbox: opts.skipPermissions ? "danger-full-access" : "workspace-write",
-        ...(opts.model ? { model: opts.model } : {}),
       })) as { threadId: string };
       this.threadId = res.threadId;
     }
