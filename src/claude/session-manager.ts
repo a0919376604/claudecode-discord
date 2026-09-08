@@ -1,6 +1,4 @@
-import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import type { Message, TextChannel } from "discord.js";
 import {
   upsertSession,
@@ -10,7 +8,6 @@ import {
   setAutoApprove,
 } from "../db/database.js";
 import { getConfig } from "../utils/config.js";
-import { pluginRegistry } from "../bot/client.js";
 import { L } from "../utils/i18n.js";
 import { isSkipPermissionsEnabled } from "../utils/skip-permissions.js";
 import {
@@ -21,17 +18,15 @@ import {
   createCompletedButton,
   createFinishFeatureButton,
   splitMessage,
-  type AskQuestionData,
 } from "./output-formatter.js";
 import {
   decideProgressAction,
   buildProgressContent,
 } from "./progress-decision.js";
-import { ensureFreshCredentials } from "./credentials-refresher.js";
-import { resolveWakeupDir } from "../wakeup/paths.js";
 import { drainOldest } from "../wakeup/queue.js";
 import { WakeupPayloadSchema } from "../wakeup/types.js";
-import { createPreToolUseHook } from "../hooks/pre-tool-use.js";
+import type { AgentBackend } from "../agent/backend.js";
+import { getBackend } from "../agent/backend-factory.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -104,7 +99,7 @@ export async function flushStreamBuffer(
 }
 
 interface ActiveSession {
-  queryInstance: Query;
+  backend: AgentBackend;
   channelId: string;
   sessionId: string | null; // Claude Agent SDK session ID
   dbId: string;
@@ -142,11 +137,6 @@ class SessionManager {
     prompt: string,
   ): Promise<void> {
     const channelId = channel.id;
-
-    // Best-effort: keep the macOS Keychain access token fresh before
-    // we spawn a `claude` subprocess. No-op on non-darwin and when
-    // the token is still well within expiry. Never throws.
-    await ensureFreshCredentials();
 
     const project = getProject(channelId);
     if (!project) return;
@@ -245,7 +235,7 @@ class SessionManager {
     // prompt sends Claude into a long loop (the original failure mode the
     // user reported was an hour-long silent session). Set
     // MAX_SESSION_DURATION_MIN=0 to disable the ceiling for trusted local
-    // dev. The timeout looks up the *current* queryInstance via
+    // dev. The timeout looks up the *current* backend via
     // this.sessions so it interrupts the right one even after a
     // resume-retry has swapped instances.
     const maxDurationMin = getConfig().MAX_SESSION_DURATION_MIN;
@@ -261,7 +251,7 @@ class SessionManager {
             // queries (see stopSession for the full explanation). We don't
             // want the timeout handler itself to wedge.
             Promise.race([
-              active.queryInstance.interrupt(),
+              active.backend.interrupt(),
               new Promise((resolve) => setTimeout(resolve, 3_000)),
             ]).catch((e) => {
               console.warn(
@@ -289,385 +279,219 @@ class SessionManager {
         }, maxDurationMin * 60_000)
       : null;
 
-    const skipPerms = isSkipPermissionsEnabled();
-    const runQuery = (useResume: boolean) => query({
-      prompt,
-      options: {
+    const backend = getBackend(channelId);
+    const runBackend = (useResume: boolean) =>
+      backend.start({
+        prompt,
         cwd: project.project_path,
-        plugins: pluginRegistry.toSdkPluginConfig(),
-        permissionMode: skipPerms ? "bypassPermissions" : "default",
-        ...(skipPerms ? { allowDangerouslySkipPermissions: true } : {}),
-        env: {
-          ...process.env,
-          ANTHROPIC_API_KEY: undefined,
-          PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}`,
-          WAKEUP_CHANNEL_ID: channel.id,
-          WAKEUP_DIR: resolveWakeupDir(),
-        },
-        ...(useResume && resumeSessionId ? { resume: resumeSessionId } : {}),
-        ...(getConfig().CLAUDE_MODEL ? { model: getConfig().CLAUDE_MODEL } : {}),
+        resumeSessionId: useResume ? resumeSessionId : undefined,
+        skipPermissions: isSkipPermissionsEnabled(),
+        channelId,
+        channel,   // required field — see ledger Ruling R2 (Task 4 fix round 1)
+        model: getConfig().CLAUDE_MODEL,
+      });
 
-        hooks: {
-          PreToolUse: [
-            {
-              hooks: [
-                createPreToolUseHook({
-                  channelId: channel.id,
-                  channel,
-                  now: () => Date.now(),
-                }),
-              ],
-            },
-          ],
-        },
-
-        canUseTool: async (
-          toolName: string,
-          input: Record<string, unknown>,
-        ) => {
-          toolUseCount++;
-
-          // Tool activity labels for Discord display
-          const toolLabels: Record<string, string> = {
-            Read: L("Reading files", "파일 읽는 중"),
-            Glob: L("Searching files", "파일 검색 중"),
-            Grep: L("Searching code", "코드 검색 중"),
-            Write: L("Writing file", "파일 작성 중"),
-            Edit: L("Editing file", "파일 편집 중"),
-            Bash: L("Running command", "명령어 실행 중"),
-            WebSearch: L("Searching web", "웹 검색 중"),
-            WebFetch: L("Fetching URL", "URL 가져오는 중"),
-            TodoWrite: L("Updating tasks", "작업 업데이트 중"),
-          };
-          const filePath = typeof input.file_path === "string"
-            ? ` \`${(input.file_path as string).split(/[\\/]/).pop()}\``
-            : "";
-          lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
-
-          // Surface progress on every tool use. surfaceProgress decides
-          // whether to edit the Thinking message (pre-text), update the
-          // separate progress message (post-text, stale), or stay quiet
-          // (post-text, fresh). This is the fix for the UI-freeze bug
-          // where tool activity after first text output was invisible.
-          await surfaceProgress();
-
-          // Flush any pending streamed text into Discord before showing
-          // a tool's approval / question UI. Without this, the
-          // explanation Claude wrote in the same assistant turn as the
-          // tool call is invisible — it's still buffered behind the
-          // 1500ms throttle. AskUserQuestion is the most visible victim
-          // (it then blocks for up to 5 minutes), but the same fix
-          // applies to Edit / Write / Bash approval embeds.
-          if (responseBuffer.length > 0) {
-            const { tail } = await flushStreamBuffer(
-              channel,
-              currentMessage,
-              responseBuffer,
-            );
-            currentMessage = tail;
-            responseBuffer = "";
-            bufferFinalized = true;
-            lastEditTime = Date.now();
-          }
-
-          // Handle AskUserQuestion with interactive Discord UI
-          if (toolName === "AskUserQuestion") {
-            const questions = (input.questions as AskQuestionData[]) ?? [];
-            if (questions.length === 0) {
-              return { behavior: "allow" as const, updatedInput: input };
-            }
-
-            const answers: Record<string, string> = {};
-
-            for (let qi = 0; qi < questions.length; qi++) {
-              const q = questions[qi];
-              const qRequestId = randomUUID();
-              const { embed, components } = createAskUserQuestionEmbed(
-                q,
-                qRequestId,
-                qi,
-                questions.length,
-              );
-
-              updateSessionStatus(channelId, "waiting");
-              await channel.send({ embeds: [embed], components });
-
-              const answer = await new Promise<string | null>((resolve) => {
-                const timeout = setTimeout(() => {
-                  pendingQuestions.delete(qRequestId);
-                  // Clean up custom input if pending
-                  const ci = pendingCustomInputs.get(channelId);
-                  if (ci?.requestId === qRequestId) {
-                    pendingCustomInputs.delete(channelId);
-                  }
-                  resolve(null);
-                }, 5 * 60 * 1000);
-
-                pendingQuestions.set(qRequestId, {
-                  resolve: (ans) => {
-                    clearTimeout(timeout);
-                    pendingQuestions.delete(qRequestId);
-                    resolve(ans);
-                  },
-                  channelId,
-                });
-              });
-
-              if (answer === null) {
-                updateSessionStatus(channelId, "online");
-                return {
-                  behavior: "deny" as const,
-                  message: L("Question timed out", "질문 시간 초과"),
-                };
-              }
-
-              // AskUserQuestionOutput.answers is keyed by the full question text,
-              // not the short header chip (see sdk-tools.d.ts AskUserQuestionOutput).
-              answers[q.question] = answer;
-            }
-
-            updateSessionStatus(channelId, "online");
-            return {
-              behavior: "allow" as const,
-              updatedInput: { ...input, answers },
-            };
-          }
-
-          // Auto-approve read-only tools
-          const readOnlyTools = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"];
-          if (readOnlyTools.includes(toolName)) {
-            return { behavior: "allow" as const, updatedInput: input };
-          }
-
-          // Check auto-approve setting
-          const currentProject = getProject(channelId);
-          if (currentProject?.auto_approve) {
-            return { behavior: "allow" as const, updatedInput: input };
-          }
-
-          // Ask user via Discord buttons
-          const requestId = randomUUID();
-          const { embed, row } = createToolApprovalEmbed(
-            toolName,
-            input,
-            requestId,
-          );
-
-          updateSessionStatus(channelId, "waiting");
-          await channel.send({
-            embeds: [embed],
-            components: [row],
-          });
-
-          // Wait for user decision (timeout 5 min)
-          return new Promise((resolve) => {
-            const timeout = setTimeout(() => {
-              pendingApprovals.delete(requestId);
-              updateSessionStatus(channelId, "online");
-              resolve({ behavior: "deny" as const, message: "Approval timed out" });
-            }, 5 * 60 * 1000);
-
-            pendingApprovals.set(requestId, {
-              resolve: (decision) => {
-                clearTimeout(timeout);
-                pendingApprovals.delete(requestId);
-                updateSessionStatus(channelId, "online");
-                resolve(
-                  decision.behavior === "allow"
-                    ? { behavior: "allow" as const, updatedInput: input }
-                    : { behavior: "deny" as const, message: decision.message ?? "Denied by user" },
-                );
-              },
-              channelId,
-            });
-          });
-        },
-      },
-    });
-
-    let queryInstance = runQuery(Boolean(resumeSessionId));
+    let eventStream = runBackend(Boolean(resumeSessionId));
     let attemptedResume = Boolean(resumeSessionId);
 
     try {
       retry: while (true) {
         // Store the active session (update each iteration so Stop button uses current instance)
         this.sessions.set(channelId, {
-          queryInstance,
+          backend,
           channelId,
           sessionId: resumeSessionId ?? null,
           dbId,
         });
 
         try {
-          for await (const message of queryInstance) {
-            // Capture session ID
-            if (
-              message.type === "system" &&
-              "subtype" in message &&
-              message.subtype === "init"
-            ) {
-              const sdkSessionId = (message as { session_id?: string }).session_id;
-              if (sdkSessionId) {
+          for await (const event of eventStream) {
+            switch (event.type) {
+              case "session_init": {
                 const active = this.sessions.get(channelId);
-                if (active) active.sessionId = sdkSessionId;
-                upsertSession(dbId, channelId, sdkSessionId, "online");
+                if (active) active.sessionId = event.sessionId;
+                upsertSession(dbId, channelId, event.sessionId, "online");
+                break;
               }
-            }
 
-            // Handle streaming text
-            if (message.type === "assistant" && "content" in message) {
-              const content = message.content;
-              if (Array.isArray(content)) {
-                for (const block of content) {
-                  if ("text" in block && typeof block.text === "string") {
-                    responseBuffer += block.text;
-                    hasTextOutput = true;
+              case "text_delta": {
+                responseBuffer += event.text;
+                hasTextOutput = true;
+                const now = Date.now();
+                if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
+                  lastEditTime = now;
+                  lastTextTime = now;
+                  progressMessage = null;
+                  if (bufferFinalized) {
+                    currentMessage = await channel.send("...");
+                    bufferFinalized = false;
                   }
+                  const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
+                  currentMessage = tail;
+                  responseBuffer = remainingBuffer;
                 }
+                break;
               }
 
-              // Throttled message edit
-              const now = Date.now();
-              if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
-                lastEditTime = now;
-                // Record that fresh text just streamed. This (a) suppresses
-                // the next few progress ticks via the stale-threshold check
-                // and (b) abandons any existing progress message so the next
-                // stale window will create a fresh snapshot below the
-                // latest streamed content rather than editing one that's
-                // now above unrelated text.
-                lastTextTime = now;
-                progressMessage = null;
-
-                if (bufferFinalized) {
-                  // The previous tool flush froze currentMessage. Open a
-                  // fresh message below it for this batch of streaming
-                  // text, otherwise the helper would overwrite text the
-                  // user has already read.
-                  currentMessage = await channel.send("...");
-                  bufferFinalized = false;
-                }
-
-                const { tail, remainingBuffer } = await flushStreamBuffer(
-                  channel,
-                  currentMessage,
-                  responseBuffer,
-                );
-                currentMessage = tail;
-                responseBuffer = remainingBuffer;
-              }
-            }
-
-            // Handle result. The SDK emits two flavors:
-            //   - SDKResultSuccess: { type: "result", subtype: "success",
-            //                         result: string, ... }
-            //   - SDKResultError:   { type: "result", subtype:
-            //                         "error_during_execution" | ...,
-            //                         errors: string[], is_error: true, ... }
-            // The previous check `"result" in message` only matched success
-            // because SDKResultError has `errors[]` instead of `result`.
-            // Error results then fell through, the loop kept waiting, and
-            // the SDK eventually threw `Claude Code returned an error
-            // result: ...` which surfaced as a bare `❌` message with no
-            // cost/duration footer — exactly the symptom the user reported.
-            if (message.type === "result") {
-              const resultMsg = message as {
-                type: "result";
-                subtype?: string;
-                result?: string;
-                errors?: string[];
-                is_error?: boolean;
-                total_cost_usd?: number;
-                duration_ms?: number;
-              };
-              const isError =
-                resultMsg.is_error === true ||
-                (resultMsg.subtype !== undefined && resultMsg.subtype !== "success");
-              const resultText = isError
-                ? (resultMsg.errors && resultMsg.errors.length > 0
-                    ? resultMsg.errors.join("; ")
-                    : L("Task failed", "작업 실패"))
-                : (resultMsg.result ?? L("Task completed", "작업 완료"));
-
-              // Flush remaining buffer
-              if (responseBuffer.length > 0) {
-                const chunks = splitMessage(responseBuffer);
-                try {
-                  await currentMessage.edit(chunks[0] || L("Done.", "완료."));
-                  for (let i = 1; i < chunks.length; i++) {
-                    await channel.send(chunks[i]);
-                  }
-                } catch (e) {
-                  console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
-                }
+              case "tool_start": {
+                toolUseCount++;
+                const toolLabels: Record<string, string> = {
+                  Read: L("Reading files", "파일 읽는 중"),
+                  Glob: L("Searching files", "파일 검색 중"),
+                  Grep: L("Searching code", "코드 검색 중"),
+                  Write: L("Writing file", "파일 작성 중"),
+                  Edit: L("Editing file", "파일 편집 중"),
+                  Bash: L("Running command", "명령어 실행 중"),
+                  WebSearch: L("Searching web", "웹 검색 중"),
+                  WebFetch: L("Fetching URL", "URL 가져오는 중"),
+                  TodoWrite: L("Updating tasks", "작업 업데이트 중"),
+                };
+                const filePath = typeof event.input.file_path === "string"
+                  ? ` \`${(event.input.file_path as string).split(/[\\/]/).pop()}\``
+                  : "";
+                lastActivity = `${toolLabels[event.toolName] ?? `Using ${event.toolName}`}${filePath}`;
+                await surfaceProgress();
+                break;
               }
 
-              // Replace stop button with completed button
-              try {
-                await currentMessage.edit({
-                  components: [createCompletedButton()],
+              case "tool_approval_request": {
+                // Flush buffered text so user sees Claude's explanation before the button
+                if (responseBuffer.length > 0) {
+                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
+                  currentMessage = tail;
+                  responseBuffer = "";
+                  bufferFinalized = true;
+                  lastEditTime = Date.now();
+                }
+                // Auto-approve check
+                const currentProject = getProject(channelId);
+                if (currentProject?.auto_approve) {
+                  backend.respondToApproval(event.requestId, "allow");
+                  break;
+                }
+                // Discord button
+                const { embed, row } = createToolApprovalEmbed(event.toolName, event.input, event.requestId);
+                updateSessionStatus(channelId, "waiting");
+                await channel.send({ embeds: [embed], components: [row] });
+                const timeout = setTimeout(() => {
+                  pendingApprovals.delete(event.requestId);
+                  updateSessionStatus(channelId, "online");
+                  backend.respondToApproval(event.requestId, "deny", "Approval timed out");
+                }, 5 * 60 * 1000);
+                pendingApprovals.set(event.requestId, {
+                  resolve: (decision) => {
+                    clearTimeout(timeout);
+                    pendingApprovals.delete(event.requestId);
+                    updateSessionStatus(channelId, "online");
+                    backend.respondToApproval(
+                      event.requestId,
+                      decision.behavior === "allow" ? "allow" : "deny",
+                      decision.message,
+                    );
+                  },
+                  channelId,
                 });
-              } catch (e) {
-                console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
+                break;
               }
 
-              // Send result embed (red + ❌ on error, green + ✅ on success)
-              const resultEmbed = createResultEmbed(
-                resultText,
-                resultMsg.total_cost_usd ?? 0,
-                resultMsg.duration_ms ?? 0,
-                getConfig().SHOW_COST,
-                isError,
-              );
-              await channel.send({
-                embeds: [resultEmbed],
-                components: [createFinishFeatureButton(channelId)],
-              });
-
-              // Detect auth/credit errors in result and suggest re-login
-              const resultAuthKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
-              const lowerResult = resultText.toLowerCase();
-              if (resultAuthKeywords.some((kw) => lowerResult.includes(kw))) {
-                await channel.send(L(
-                  "🔑 Claude Code is not logged in. Please open a terminal on the host PC and run `claude login` to authenticate, then try again.",
-                  "🔑 Claude Code 로그인이 필요합니다. 호스트 PC에서 터미널을 열고 `claude login`을 실행하여 인증 후 다시 시도해 주세요.",
-                ));
+              case "ask_question_request": {
+                if (responseBuffer.length > 0) {
+                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
+                  currentMessage = tail;
+                  responseBuffer = "";
+                  bufferFinalized = true;
+                  lastEditTime = Date.now();
+                }
+                const answers: Record<string, string> = {};
+                let timedOut = false;
+                for (let qi = 0; qi < event.questions.length; qi++) {
+                  const q = event.questions[qi];
+                  const qRequestId = randomUUID();
+                  const { embed, components } = createAskUserQuestionEmbed(q, qRequestId, qi, event.questions.length);
+                  updateSessionStatus(channelId, "waiting");
+                  await channel.send({ embeds: [embed], components });
+                  const answer = await new Promise<string | null>((resolve) => {
+                    const t = setTimeout(() => {
+                      pendingQuestions.delete(qRequestId);
+                      const ci = pendingCustomInputs.get(channelId);
+                      if (ci?.requestId === qRequestId) pendingCustomInputs.delete(channelId);
+                      resolve(null);
+                    }, 5 * 60 * 1000);
+                    pendingQuestions.set(qRequestId, {
+                      resolve: (ans) => { clearTimeout(t); pendingQuestions.delete(qRequestId); resolve(ans); },
+                      channelId,
+                    });
+                  });
+                  if (answer === null) {
+                    timedOut = true;
+                    break;   // exit the question-collection for-loop
+                  }
+                  answers[q.question] = answer;
+                }
+                updateSessionStatus(channelId, "online");
+                if (timedOut) {
+                  // Deny via approval channel — backend translates to SDK-level deny.
+                  // Then let the for-await continue: the backend's SDK will produce a
+                  // result event with the denial as the reason, hitting the "result"
+                  // case below and terminating the turn cleanly. Do NOT return here.
+                  backend.respondToApproval(event.requestId, "deny", L("Question timed out", "질문 시간 초과"));
+                } else {
+                  backend.respondToQuestion(event.requestId, answers);
+                }
+                break;
               }
 
-              updateSessionStatus(channelId, isError ? "offline" : "idle");
-              hasResult = true;
-              // Explicitly break out of the for-await as soon as the result
-              // is processed. We do NOT trust the SDK iterator to close on
-              // its own — in practice (string-prompt / single-user-turn
-              // mode) the SDK calls transport.endInput() after the first
-              // result, but the underlying claude CLI subprocess may take
-              // arbitrarily long to actually exit (flushing buffers, running
-              // hooks, waiting on dangling network callbacks). If the
-              // iterator stalls, this for-await blocks forever, the finally
-              // block never runs, the session entry never leaves
-              // this.sessions, and the user sees: no Stop button, can't
-              // send new messages — the exact bug the user reported.
-              break;
+              case "tool_end":
+                // Optional signal — no-op for now (heartbeat already covers)
+                break;
+
+              case "result": {
+                const isError = event.isError;
+                const resultText = event.text;
+                if (responseBuffer.length > 0) {
+                  const chunks = splitMessage(responseBuffer);
+                  try {
+                    await currentMessage.edit(chunks[0] || L("Done.", "완료."));
+                    for (let i = 1; i < chunks.length; i++) await channel.send(chunks[i]);
+                  } catch (e) {
+                    console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
+                  }
+                }
+                try {
+                  await currentMessage.edit({ components: [createCompletedButton()] });
+                } catch (e) {
+                  console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
+                }
+                const resultEmbed = createResultEmbed(
+                  resultText,
+                  event.costUsd ?? 0,
+                  Date.now() - startTime,
+                  getConfig().SHOW_COST,
+                  isError,
+                );
+                await channel.send({
+                  embeds: [resultEmbed],
+                  components: [createFinishFeatureButton(channelId)],
+                });
+                const authHint = backend.getAuthErrorHint(new Error(resultText));
+                if (authHint) await channel.send(authHint);
+                updateSessionStatus(channelId, isError ? "offline" : "idle");
+                hasResult = true;
+                break;
+              }
             }
           }
           break;
         } catch (innerError) {
           // If the resume attempt crashed before any user-visible output, the saved
           // session_id is likely stale. Silently retry once without resume.
-          const rawMsg = innerError instanceof Error ? innerError.message : String(innerError);
           const resumeStale =
-            attemptedResume &&
-            !hasTextOutput &&
-            !hasResult &&
-            (rawMsg.includes("process exited with code") ||
-              rawMsg.includes("No conversation found") ||
-              rawMsg.includes("session not found") ||
-              /resume/i.test(rawMsg));
+            attemptedResume && !hasTextOutput && !hasResult && backend.isResumeStaleError(innerError);
           if (!resumeStale) throw innerError;
 
-          console.warn(`[session] Resume failed for ${channelId}, retrying without resume:`, rawMsg);
+          console.warn(`[session] Resume failed for ${channelId}, retrying without resume:`, innerError instanceof Error ? innerError.message : String(innerError));
           upsertSession(dbId, channelId, null, "online");
-          queryInstance = runQuery(false);
+          eventStream = runBackend(false);
           attemptedResume = false;
           continue retry;
         }
@@ -703,14 +527,8 @@ class SessionManager {
       }
 
       // Detect auth/credit errors and suggest re-login
-      const authKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
-      const lowerMsg = rawMsg.toLowerCase();
-      if (authKeywords.some((kw) => lowerMsg.includes(kw))) {
-        errMsg += L(
-          "\n\n🔑 Claude Code is not logged in. Please open a terminal on the host PC and run `claude login` to authenticate, then try again.",
-          "\n\n🔑 Claude Code 로그인이 필요합니다. 호스트 PC에서 터미널을 열고 `claude login`을 실행하여 인증 후 다시 시도해 주세요.",
-        );
-      }
+      const authHint = backend.getAuthErrorHint(error);
+      if (authHint) errMsg += "\n\n" + authHint;
 
       const resultEmbed = createResultEmbed(
         errMsg,
@@ -838,7 +656,7 @@ class SessionManager {
     // sendMessage will exit eventually when the subprocess actually dies,
     // and its finally block will no-op the sessions.delete (see dbId guard).
     Promise.race([
-      session.queryInstance.interrupt(),
+      session.backend.interrupt(),
       new Promise((resolve) => setTimeout(resolve, 3_000)),
     ]).catch((e) => {
       console.warn(
