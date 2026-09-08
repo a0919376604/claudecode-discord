@@ -18,28 +18,25 @@ export function createSwitchBackendCommand(target: "claude" | "codex", displayNa
     async execute(interaction: ChatInputCommandInteraction): Promise<void> {
       const project = getProject(interaction.channelId);
       if (!project) {
-        await interaction.reply({
+        await interaction.editReply({
           content: L("❌ Register a project first with /register", "❌ 먼저 /register로 프로젝트를 등록하세요"),
-          ephemeral: true,
         });
         return;
       }
 
       if (project.backend === target) {
-        await interaction.reply({
+        await interaction.editReply({
           content: L(`✅ Already using ${displayName} on this channel.`, `✅ 이미 ${displayName}를 사용 중입니다.`),
-          ephemeral: true,
         });
         return;
       }
 
       if (sessionManager.isActive(interaction.channelId)) {
-        await interaction.reply({
+        await interaction.editReply({
           content: L(
             `⚠️ A session is currently running. Use /stop first, then try /${target} again.`,
             `⚠️ 세션이 실행 중입니다. /stop 후 다시 /${target}를 시도하세요.`,
           ),
-          ephemeral: true,
         });
         return;
       }
@@ -56,13 +53,12 @@ export function createSwitchBackendCommand(target: "claude" | "codex", displayNa
           .setStyle(ButtonStyle.Secondary),
       );
       const currentDisplay = project.backend === "claude" ? "Claude" : "Codex";
-      await interaction.reply({
+      await interaction.editReply({
         content: L(
           `⚠️ Switching from **${currentDisplay}** to **${displayName}** will clear the existing ${currentDisplay} session on this channel. The old session file still exists on disk but this channel will no longer resume it. Continue?`,
           `⚠️ **${currentDisplay}**에서 **${displayName}**로 전환하면 이 채널의 기존 ${currentDisplay} 세션이 초기화됩니다. 세션 파일은 디스크에 남지만 이 채널에서는 더 이상 이어갈 수 없습니다. 계속할까요?`,
         ),
         components: [row],
-        ephemeral: true,
       });
     },
   };

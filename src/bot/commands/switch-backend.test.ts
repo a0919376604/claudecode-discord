@@ -22,7 +22,7 @@ const mockIsActive = vi.mocked(sessionManager.isActive);
 function makeInteraction(channelId = "ch1") {
   return {
     channelId,
-    reply: vi.fn(async () => undefined),
+    editReply: vi.fn(async () => undefined),
   } as unknown as import("discord.js").ChatInputCommandInteraction;
 }
 
@@ -38,8 +38,8 @@ describe("createSwitchBackendCommand", () => {
     const cmd = createSwitchBackendCommand("codex", "Codex");
     const inter = makeInteraction();
     await cmd.execute(inter);
-    expect(inter.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining("/register"), ephemeral: true }),
+    expect(inter.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining("/register") }),
     );
   });
 
@@ -51,7 +51,7 @@ describe("createSwitchBackendCommand", () => {
     const cmd = createSwitchBackendCommand("codex", "Codex");
     const inter = makeInteraction();
     await cmd.execute(inter);
-    expect(inter.reply).toHaveBeenCalledWith(
+    expect(inter.editReply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining("Already using") }),
     );
   });
@@ -65,7 +65,7 @@ describe("createSwitchBackendCommand", () => {
     const cmd = createSwitchBackendCommand("codex", "Codex");
     const inter = makeInteraction();
     await cmd.execute(inter);
-    expect(inter.reply).toHaveBeenCalledWith(
+    expect(inter.editReply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining("/stop") }),
     );
   });
@@ -79,7 +79,7 @@ describe("createSwitchBackendCommand", () => {
     const cmd = createSwitchBackendCommand("codex", "Codex");
     const inter = makeInteraction();
     await cmd.execute(inter);
-    const call = (inter.reply as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const call = (inter.editReply as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(call.components).toBeDefined();
     expect(call.content).toContain("Continue?");
   });
