@@ -81,6 +81,7 @@ export class ClaudeBackend implements AgentBackend {
         canUseTool: async (toolName, input) => {
           // AskUserQuestion → structured question event
           if (toolName === "AskUserQuestion") {
+            this.pushEvent({ type: "tool_start", toolName: "AskUserQuestion", input });
             const requestId = randomUUID();
             const questions = (input as { questions?: unknown }).questions ?? [];
             this.pushEvent({ type: "ask_question_request", requestId, questions: questions as never });
