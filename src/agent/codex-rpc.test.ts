@@ -73,7 +73,8 @@ function makeStreamPair() {
   const client = new Duplex({
     read() {},
     write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
-      setImmediate(() => { server.push(chunk); });
+      // Route client writes to server's readable via the base push (bypassing override)
+      setImmediate(() => { basePushServer(chunk); });
       cb();
     },
   });
@@ -84,6 +85,16 @@ function makeStreamPair() {
       cb();
     },
   });
+
+  // Capture the original Readable.push bound to server (before override)
+  const basePushServer = Duplex.prototype.push.bind(server) as (chunk: Buffer | null) => boolean;
+
+  // Override server.push so direct calls (e.g. from tests) route to client's readable
+  (server as unknown as { push: (chunk: Buffer | null) => boolean }).push = (chunk) => {
+    client.push(chunk);
+    return true;
+  };
+
   return { client, server };
 }
 
@@ -148,5 +159,70 @@ describe("CodexRpc.request", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(received).toEqual({ jsonrpc: "2.0", method: "hello", params: { x: 1 } });
     rpc.close();
+  });
+});
+
+describe("CodexRpc bidirectional", () => {
+  it("dispatches server notifications to registered handler", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    let received: unknown = null;
+    rpc.onNotification("progress", (params) => { received = params; });
+    server.push(encodeFrame({ jsonrpc: "2.0", method: "progress", params: { pct: 50 } }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(received).toEqual({ pct: 50 });
+    rpc.close();
+  });
+
+  it("dispatches reverse requests and sends handler result as response", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    rpc.onRequest("approve", async (params) => {
+      const p = params as { cmd: string };
+      return { ok: p.cmd === "ls" };
+    });
+    const dec = new FrameDecoder();
+    const responses: unknown[] = [];
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of dec.push(chunk)) responses.push(msg);
+    });
+    server.push(encodeFrame({ jsonrpc: "2.0", id: 99, method: "approve", params: { cmd: "ls" } }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(responses).toContainEqual({ jsonrpc: "2.0", id: 99, result: { ok: true } });
+    rpc.close();
+  });
+
+  it("sends error response when reverse-request handler throws", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    rpc.onRequest("bomb", async () => { throw new Error("nope"); });
+    const dec = new FrameDecoder();
+    const responses: unknown[] = [];
+    server.on("data", (chunk: Buffer) => {
+      for (const msg of dec.push(chunk)) responses.push(msg);
+    });
+    server.push(encodeFrame({ jsonrpc: "2.0", id: 42, method: "bomb" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(responses[0]).toMatchObject({ id: 42, error: { message: "nope" } });
+    rpc.close();
+  });
+
+  it("notifications() iterator yields incoming notifications", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const iter = rpc.notifications();
+
+    setTimeout(() => {
+      server.push(encodeFrame({ jsonrpc: "2.0", method: "a", params: 1 }));
+      server.push(encodeFrame({ jsonrpc: "2.0", method: "b", params: 2 }));
+      setTimeout(() => rpc.close(), 20);
+    }, 10);
+
+    const received: Array<{ method: string; params: unknown }> = [];
+    for await (const n of iter) received.push(n);
+    expect(received).toEqual([
+      { method: "a", params: 1 },
+      { method: "b", params: 2 },
+    ]);
   });
 });

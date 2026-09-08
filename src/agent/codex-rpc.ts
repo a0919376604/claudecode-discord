@@ -55,6 +55,11 @@ export class CodexRpc {
   private decoder = new FrameDecoder();
   private closed = false;
 
+  private notificationHandlers = new Map<string, (params: unknown) => void>();
+  private requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
+  private notifQueue: Array<{ method: string; params: unknown }> = [];
+  private notifResolver: (() => void) | null = null;
+
   constructor(private stream: Duplex) {
     stream.on("data", (chunk: Buffer) => this.onData(chunk));
     stream.on("error", (err: Error) => this.rejectAll(err));
@@ -76,9 +81,33 @@ export class CodexRpc {
     this.stream.write(encodeFrame({ jsonrpc: "2.0", method, params }));
   }
 
+  onNotification(method: string, handler: (params: unknown) => void): void {
+    this.notificationHandlers.set(method, handler);
+  }
+
+  onRequest(method: string, handler: (params: unknown) => Promise<unknown>): void {
+    this.requestHandlers.set(method, handler);
+  }
+
+  async *notifications(): AsyncIterableIterator<{ method: string; params: unknown }> {
+    while (!this.closed || this.notifQueue.length > 0) {
+      if (this.notifQueue.length > 0) {
+        yield this.notifQueue.shift()!;
+        continue;
+      }
+      if (this.closed) return;
+      await new Promise<void>((resolve) => { this.notifResolver = resolve; });
+    }
+  }
+
   close(): void {
     this.closed = true;
     this.rejectAll(new Error("RPC closed"));
+    if (this.notifResolver) {
+      const r = this.notifResolver;
+      this.notifResolver = null;
+      r();
+    }
     this.stream.end();
   }
 
@@ -94,14 +123,53 @@ export class CodexRpc {
   }
 
   protected dispatch(msg: object): void {
-    const m = msg as { id?: number; result?: unknown; error?: { message?: string } };
+    const m = msg as {
+      id?: number;
+      method?: string;
+      params?: unknown;
+      result?: unknown;
+      error?: { message?: string };
+    };
+
+    // Response to our request (has id that matches a pending entry, no method field for a pure response)
     if (typeof m.id === "number" && this.pending.has(m.id)) {
       const pending = this.pending.get(m.id)!;
       this.pending.delete(m.id);
       if (m.error) pending.reject(new Error(m.error.message ?? "RPC error"));
       else pending.resolve(m.result);
+      return;
     }
-    // Notifications and reverse requests handled in subclass (Task 10)
+
+    // Server → client request (has id + method, not in our pending map)
+    if (typeof m.id === "number" && typeof m.method === "string") {
+      const handler = this.requestHandlers.get(m.method);
+      if (!handler) {
+        this.stream.write(encodeFrame({
+          jsonrpc: "2.0", id: m.id,
+          error: { code: -32601, message: `Method not found: ${m.method}` },
+        }));
+        return;
+      }
+      handler(m.params)
+        .then((result) => this.stream.write(encodeFrame({ jsonrpc: "2.0", id: m.id, result })))
+        .catch((err: unknown) => this.stream.write(encodeFrame({
+          jsonrpc: "2.0", id: m.id,
+          error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+        })));
+      return;
+    }
+
+    // Notification (no id, has method)
+    if (typeof m.method === "string") {
+      const handler = this.notificationHandlers.get(m.method);
+      if (handler) handler(m.params);
+      this.notifQueue.push({ method: m.method, params: m.params });
+      if (this.notifResolver) {
+        const r = this.notifResolver;
+        this.notifResolver = null;
+        r();
+      }
+    }
   }
 
   private rejectAll(err: Error): void {
