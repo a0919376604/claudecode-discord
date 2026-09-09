@@ -241,4 +241,120 @@ describe("ClaudeBackend", () => {
 
     expect(approvalRequestId).not.toBeNull();
   });
+
+  // Regression test for the "AskUserQuestion timeout hangs the session" bug:
+  //
+  // Session-manager routes question timeouts through `backend.respondToApproval(id, "deny", msg)`
+  // (historical convention — session-manager uses one approval channel for both
+  // approval buttons and question timeout). Before this fix, respondToApproval
+  // only looked at pendingApprovals and silently no-oped when the id was a
+  // question id. canUseTool then waited on the pendingQuestions promise
+  // forever → session hung, user could only escape with /stop.
+  //
+  // Correct behavior (matches pre-refactor): timeout → canUseTool returns
+  // {behavior: "deny", message: "Question timed out"} to the SDK. Claude sees
+  // the tool as denied due to timeout and can move on.
+  it("question timeout via respondToApproval(deny) makes canUseTool return deny (regression: timeout hangs)", async () => {
+    const backend = new ClaudeBackend();
+    const iter = backend.start(makeStartOpts());
+
+    let canUseToolResult: { behavior: string; message?: string } | null = null;
+
+    setTimeout(() => {
+      sdkController.push({ type: "system", subtype: "init", session_id: "sess-3" });
+      setTimeout(() => {
+        // Simulate SDK invoking canUseTool for AskUserQuestion
+        sdkController.capturedCanUseTool!(
+          "AskUserQuestion",
+          { questions: [{ question: "Pick one?" }] },
+        ).then((decision) => {
+          canUseToolResult = decision as { behavior: string; message?: string };
+          // After canUseTool returns, the SDK would normally continue. In this
+          // test we just push a synthetic result to let the generator finish.
+          sdkController.push({
+            type: "result",
+            subtype: "success",
+            result: "done",
+            total_cost_usd: 0,
+          });
+          sdkController.end();
+        });
+      }, 10);
+    }, 10);
+
+    const readerPromise = (async () => {
+      for await (const ev of iter) {
+        if (ev.type === "ask_question_request") {
+          // Simulate session-manager's timeout branch — it calls
+          // respondToApproval("deny") with a message, NOT respondToQuestion.
+          backend.respondToApproval(ev.requestId, "deny", "Question timed out");
+        }
+        if (ev.type === "result") break;
+      }
+    })();
+
+    await Promise.race([
+      readerPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout: canUseTool never returned after question denial (regression — respondToApproval no-oped on question id)")), 2000)),
+    ]);
+
+    expect(canUseToolResult).not.toBeNull();
+    expect(canUseToolResult!.behavior).toBe("deny");
+    expect(canUseToolResult!.message).toBe("Question timed out");
+  });
+
+  // Regression test for the "interrupt during pending question returns allow + empty answers" bug:
+  //
+  // interrupt() previously resolved pending questions with `{}`, so canUseTool
+  // returned {behavior: "allow", updatedInput: {..., answers: {}}} — Claude
+  // saw the tool as allowed with a blank answer, which is semantically wrong.
+  // Fix: interrupt() resolves pending questions as denied so canUseTool
+  // returns deny + "Interrupted".
+  it("interrupt() during a pending question makes canUseTool return deny + Interrupted (regression)", async () => {
+    const backend = new ClaudeBackend();
+    const iter = backend.start(makeStartOpts());
+
+    let canUseToolResult: { behavior: string; message?: string } | null = null;
+
+    setTimeout(() => {
+      sdkController.push({ type: "system", subtype: "init", session_id: "sess-4" });
+      setTimeout(() => {
+        sdkController.capturedCanUseTool!(
+          "AskUserQuestion",
+          { questions: [{ question: "Pick one?" }] },
+        ).then((decision) => {
+          canUseToolResult = decision as { behavior: string; message?: string };
+          sdkController.push({
+            type: "result",
+            subtype: "success",
+            result: "done",
+            total_cost_usd: 0,
+          });
+          sdkController.end();
+        });
+      }, 10);
+    }, 10);
+
+    let askEventSeen = false;
+    const readerPromise = (async () => {
+      for await (const ev of iter) {
+        if (ev.type === "ask_question_request") {
+          askEventSeen = true;
+          // Simulate /stop mid-question
+          await backend.interrupt();
+        }
+        if (ev.type === "result") break;
+      }
+    })();
+
+    await Promise.race([
+      readerPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout: interrupt during pending question did not resolve canUseTool")), 2000)),
+    ]);
+
+    expect(askEventSeen).toBe(true);
+    expect(canUseToolResult).not.toBeNull();
+    expect(canUseToolResult!.behavior).toBe("deny");
+    expect(canUseToolResult!.message).toBe("Interrupted");
+  });
 });

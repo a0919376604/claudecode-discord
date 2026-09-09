@@ -24,13 +24,27 @@ const RESUME_STALE_PATTERNS = [
   /resume/i,
 ];
 
+/**
+ * A pending AskUserQuestion can resolve two ways:
+ * - `answered`: user chose an option / typed an answer → SDK gets allow + answers
+ * - `denied`: user let it time out, /stop was pressed, etc. → SDK gets deny + message
+ *
+ * Pre-refactor session-manager returned `{behavior: "deny", message: "Question timed out"}`
+ * directly on question timeout. That semantic must be preserved — otherwise
+ * canUseTool waits on the answer promise forever (session hangs) or returns
+ * allow with empty answers (Claude thinks the user gave a blank answer).
+ */
+type QuestionResult =
+  | { kind: "answered"; answers: Record<string, string> }
+  | { kind: "denied"; message?: string };
+
 export class ClaudeBackend implements AgentBackend {
   private queryInstance: Query | null = null;
   private pendingApprovals = new Map<
     string,
     (decision: { behavior: "allow" | "deny"; updatedInput?: Record<string, unknown>; message?: string }) => void
   >();
-  private pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
+  private pendingQuestions = new Map<string, (result: QuestionResult) => void>();
   private eventQueue: NormalizedEvent[] = [];
   private queueResolver: (() => void) | null = null;
 
@@ -79,10 +93,17 @@ export class ClaudeBackend implements AgentBackend {
             const requestId = randomUUID();
             const questions = (input as { questions?: unknown }).questions ?? [];
             this.pushEvent({ type: "ask_question_request", requestId, questions: questions as never });
-            const answers = await new Promise<Record<string, string>>((resolve) => {
+            const result = await new Promise<QuestionResult>((resolve) => {
               this.pendingQuestions.set(requestId, resolve);
             });
-            return { behavior: "allow", updatedInput: { ...input, answers } };
+            if (result.kind === "denied") {
+              // Timeout, interrupt, or explicit denial. Match pre-refactor
+              // behavior: tell the SDK the tool was denied with the reason,
+              // so Claude sees "user did not answer" and can respond
+              // instead of the session hanging.
+              return { behavior: "deny", message: result.message ?? "Question denied" };
+            }
+            return { behavior: "allow", updatedInput: { ...input, answers: result.answers } };
           }
 
           // Progress signal for ALL tools (including read-only)
@@ -174,27 +195,46 @@ export class ClaudeBackend implements AgentBackend {
         new Promise((resolve) => setTimeout(resolve, 3000)),
       ]).catch(() => {});
     }
-    // Resolve all pending as deny so SDK doesn't hang
+    // Resolve all pending as deny so SDK doesn't hang.
     for (const [, resolve] of this.pendingApprovals) {
       resolve({ behavior: "deny", message: "Interrupted" });
     }
     this.pendingApprovals.clear();
-    for (const [, resolve] of this.pendingQuestions) resolve({});
+    // Questions get denied (not resolved with `{}` — that would look like an
+    // allow with empty answers and Claude would treat the tool as accepted
+    // with a blank answer).
+    for (const [, resolve] of this.pendingQuestions) {
+      resolve({ kind: "denied", message: "Interrupted" });
+    }
     this.pendingQuestions.clear();
   }
 
   respondToApproval(requestId: string, decision: "allow" | "deny", message?: string): void {
-    const resolver = this.pendingApprovals.get(requestId);
-    if (!resolver) return;
-    this.pendingApprovals.delete(requestId);
-    resolver({ behavior: decision, message });
+    const approvalResolver = this.pendingApprovals.get(requestId);
+    if (approvalResolver) {
+      this.pendingApprovals.delete(requestId);
+      approvalResolver({ behavior: decision, message });
+      return;
+    }
+    // Fall through to pendingQuestions. Session-manager routes question
+    // timeouts through respondToApproval("deny", "Question timed out"),
+    // so a "deny" for a question-shaped id means "the user did not answer".
+    // An "allow" against a question-shaped id has no natural meaning (the
+    // question needs actual answers), so we ignore it.
+    if (decision === "deny") {
+      const questionResolver = this.pendingQuestions.get(requestId);
+      if (questionResolver) {
+        this.pendingQuestions.delete(requestId);
+        questionResolver({ kind: "denied", message });
+      }
+    }
   }
 
   respondToQuestion(requestId: string, answersByQuestionText: Record<string, string>): void {
     const resolver = this.pendingQuestions.get(requestId);
     if (!resolver) return;
     this.pendingQuestions.delete(requestId);
-    resolver(answersByQuestionText);
+    resolver({ kind: "answered", answers: answersByQuestionText });
   }
 
   isResumeStaleError(error: unknown): boolean {
