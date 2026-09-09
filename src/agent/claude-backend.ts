@@ -43,12 +43,6 @@ export class ClaudeBackend implements AgentBackend {
     }
   }
 
-  private drainQueue(): NormalizedEvent[] {
-    const out = this.eventQueue;
-    this.eventQueue = [];
-    return out;
-  }
-
   async *start(opts: BackendStartOptions): AsyncIterableIterator<NormalizedEvent> {
     await ensureFreshCredentials();
 
@@ -110,25 +104,67 @@ export class ClaudeBackend implements AgentBackend {
       },
     });
 
-    // Main event loop: consume SDK messages, translate, interleave canUseTool events
-    for await (const message of this.queryInstance) {
-      // Flush any events queued by canUseTool since last iteration
-      for (const ev of this.drainQueue()) yield ev;
-
-      if ((message as { type?: string }).type === "assistant") {
-        for (const ev of assistantContentToEvents(message)) yield ev;
-        continue;
+    // Decouple SDK message consumption from event yield. The old design
+    // was `for await (const message of query) { drainQueue(); yield ... }` —
+    // it only drained canUseTool-pushed events BETWEEN SDK messages. But
+    // when the SDK is BLOCKED inside canUseTool awaiting our decision, it
+    // never yields another message, so ask_question_request /
+    // tool_approval_request events sat stuck in the queue until /stop
+    // forced the SDK to unblock. That was the "options only appear after
+    // I press stop" bug — see the two regression tests in this file.
+    //
+    // Fix: SDK messages get pushed into the same eventQueue as
+    // canUseTool events (via a background async task), and the main loop
+    // yields from the queue using the queueResolver wake pattern. Events
+    // pushed by canUseTool wake the main loop immediately, even while the
+    // SDK-message pump is blocked.
+    let sdkDone = false;
+    let sdkError: unknown = null;
+    const sdkPump = (async () => {
+      try {
+        for await (const message of this.queryInstance!) {
+          if ((message as { type?: string }).type === "assistant") {
+            for (const ev of assistantContentToEvents(message)) this.pushEvent(ev);
+            continue;
+          }
+          const translated = sdkMessageToEvent(message);
+          if (translated) {
+            this.pushEvent(translated);
+            if (translated.type === "result") return;
+          }
+        }
+      } catch (e) {
+        sdkError = e;
+      } finally {
+        sdkDone = true;
+        // Wake main loop if it's currently awaiting the resolver
+        if (this.queueResolver) {
+          const r = this.queueResolver;
+          this.queueResolver = null;
+          r();
+        }
       }
+    })();
 
-      const translated = sdkMessageToEvent(message);
-      if (translated) {
-        yield translated;
-        if (translated.type === "result") return;
+    try {
+      while (true) {
+        if (this.eventQueue.length > 0) {
+          const ev = this.eventQueue.shift()!;
+          yield ev;
+          if (ev.type === "result") return;
+          continue;
+        }
+        if (sdkDone) {
+          if (sdkError) throw sdkError;
+          return;
+        }
+        await new Promise<void>((resolve) => { this.queueResolver = resolve; });
       }
+    } finally {
+      // If the consumer bailed early, let the SDK pump settle so we don't
+      // leak the running promise. It's already handling its own errors.
+      await sdkPump.catch(() => {});
     }
-
-    // Final drain in case events queued after last SDK message
-    for (const ev of this.drainQueue()) yield ev;
   }
 
   async interrupt(): Promise<void> {
