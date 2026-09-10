@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./utils/config.js";
+import { unwrapErrorMessage } from "./utils/error-format.js";
 import { initDatabase } from "./db/database.js";
 import { startBot } from "./bot/client.js";
 import { ensureFreshCredentials } from "./claude/credentials-refresher.js";
@@ -69,12 +70,17 @@ async function main() {
     process.exit(0);
   });
 
-  // Global error handlers — prevent silent hangs from unhandled errors
+  // Global error handlers — prevent silent hangs from unhandled errors.
+  // unwrapErrorMessage exposes shapeshift CombinedError sub-errors instead
+  // of the opaque "Received one or more errors" top-level message.
   process.on("unhandledRejection", (reason) => {
-    console.error("Unhandled promise rejection:", reason);
+    const detail = unwrapErrorMessage(reason);
+    const stack = reason instanceof Error && reason.stack ? `\n${reason.stack}` : "";
+    console.error(`Unhandled promise rejection: ${detail}${stack}`);
   });
   process.on("uncaughtException", (error) => {
-    console.error("Uncaught exception:", error);
+    const detail = unwrapErrorMessage(error);
+    console.error(`Uncaught exception: ${detail}${error.stack ? `\n${error.stack}` : ""}`);
     // Don't exit — let the bot keep running for non-fatal errors
   });
 

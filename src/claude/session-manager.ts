@@ -10,6 +10,7 @@ import {
 import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { isSkipPermissionsEnabled } from "../utils/skip-permissions.js";
+import { unwrapErrorMessage } from "../utils/error-format.js";
 import {
   createToolApprovalEmbed,
   createAskUserQuestionEmbed,
@@ -220,7 +221,7 @@ class SessionManager {
       } catch (e) {
         console.warn(
           `[progress] Failed to surface progress for ${channelId}:`,
-          e instanceof Error ? e.message : e,
+          unwrapErrorMessage(e),
         );
       }
     };
@@ -499,11 +500,13 @@ class SessionManager {
     } catch (error) {
       // Skip error if result was already delivered (e.g., "Credit balance is too low" + exit code 1)
       if (hasResult) {
-        console.warn(`[session] Ignoring post-result error for ${channelId}:`, error instanceof Error ? error.message : error);
+        console.warn(`[session] Ignoring post-result error for ${channelId}:`, unwrapErrorMessage(error));
         return;
       }
-      const rawMsg =
-        error instanceof Error ? error.message : "Unknown error occurred";
+      const rawMsg = unwrapErrorMessage(error);
+      // Also log the unwrapped detail so we always have it in the log even
+      // if the sanitized errMsg (below) hides it.
+      console.error(`[session] sendMessage failed for ${channelId}:`, rawMsg, error instanceof Error && error.stack ? `\n${error.stack}` : "");
 
       // Parse API error JSON to show clean message
       let errMsg = rawMsg;
