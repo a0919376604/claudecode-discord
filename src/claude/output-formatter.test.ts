@@ -256,6 +256,27 @@ describe("createResultEmbed", () => {
     expect(footer).not.toContain("Cost");
     expect(footer).toContain("Duration : 5.0s");
   });
+
+  // Regression test for the "wakeup Task Failed with empty result" bug:
+  // Discord requires embed.description to be 1-4096 chars. Passing "" to
+  // EmbedBuilder.setDescription throws shapeshift's "Invalid string length"
+  // + "Expected values to be equals" (the union validator's other branches
+  // also reject). The translator has its own fallback, but this defense
+  // guarantees we never reach the crash even if a future caller sends "".
+  it("substitutes non-empty placeholder for empty result string (defense-in-depth)", () => {
+    // The two-line assertion: (1) does not throw, (2) description is non-empty.
+    expect(() => createResultEmbed("", undefined, 1000, true, false)).not.toThrow();
+    const embed = createResultEmbed("", undefined, 1000, true, false);
+    expect(embed.data.description).toBeTruthy();
+    expect(embed.data.description!.length).toBeGreaterThan(0);
+  });
+
+  it("substitutes placeholder for empty error result (defense-in-depth)", () => {
+    expect(() => createResultEmbed("", undefined, 1000, true, true)).not.toThrow();
+    const embed = createResultEmbed("", undefined, 1000, true, true);
+    expect(embed.data.description).toBeTruthy();
+    expect(embed.data.title).toContain("Task Failed");
+  });
 });
 
 // ─── createAskUserQuestionEmbed ───

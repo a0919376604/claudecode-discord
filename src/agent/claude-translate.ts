@@ -40,11 +40,18 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
     };
     const isError =
       r.is_error === true || (r.subtype !== undefined && r.subtype !== "success");
-    const text = isError
-      ? r.errors && r.errors.length > 0
-        ? r.errors.join("; ")
-        : "Task failed"
-      : r.result ?? "Task completed";
+    // Fallbacks must handle BOTH nullish AND empty string. SDK returns
+    // `result: ""` when a wakeup / silent-tool turn produces no visible
+    // output. `??` alone would leave text as "", causing
+    // createResultEmbed → EmbedBuilder.setDescription("") → shapeshift
+    // "Invalid string length" crash (see docs/… — surfaced Sep 2026).
+    let text: string;
+    if (isError) {
+      const joined = (r.errors ?? []).filter((e) => e && e.length > 0).join("; ");
+      text = joined.length > 0 ? joined : "Task failed";
+    } else {
+      text = r.result && r.result.length > 0 ? r.result : "Task completed";
+    }
     return { type: "result", text, costUsd: r.total_cost_usd, isError };
   }
 

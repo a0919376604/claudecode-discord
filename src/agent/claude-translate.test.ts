@@ -69,4 +69,26 @@ describe("sdkMessageToEvent", () => {
   it("returns null for unknown types", () => {
     expect(sdkMessageToEvent({ type: "unknown" })).toBeNull();
   });
+
+  // Regression tests for the "wakeup Task Failed with empty result" bug:
+  // SDK sometimes returns success results with `result: ""` (silent wakeup
+  // turns that produce no visible output). Old translator's `r.result ??
+  // "Task completed"` only fell back on nullish — an empty string slipped
+  // through as event.text = "", causing downstream createResultEmbed to
+  // crash shapeshift with "Invalid string length" when trying to
+  // setDescription("").
+  it("falls back to 'Task completed' for success with empty result string", () => {
+    const msg = { type: "result", subtype: "success", result: "" };
+    expect(sdkMessageToEvent(msg)).toMatchObject({ text: "Task completed", isError: false });
+  });
+
+  it("falls back to 'Task failed' for error with only empty-string entries in errors[]", () => {
+    const msg = { type: "result", is_error: true, errors: ["", ""] };
+    expect(sdkMessageToEvent(msg)).toMatchObject({ text: "Task failed", isError: true });
+  });
+
+  it("filters empty strings when joining error messages", () => {
+    const msg = { type: "result", is_error: true, errors: ["", "real error", ""] };
+    expect(sdkMessageToEvent(msg)).toMatchObject({ text: "real error", isError: true });
+  });
 });

@@ -284,9 +284,14 @@ export function createResultEmbed(
     : L("✅ Task Complete", "✅ 작업 완료");
   const color = isError ? 0xff0000 : 0x00ff00;
 
+  // Defense-in-depth against empty description: Discord requires 1-4096
+  // chars, so setDescription("") throws shapeshift "Invalid string length".
+  // The translator has its own fallback, but this guarantees we never
+  // reach the crash even if a future call site sends "".
+  const description = (result && result.length > 0 ? result : "…").slice(0, 4000);
   const embed = new EmbedBuilder()
     .setTitle(title)
-    .setDescription(result.slice(0, 4000))
+    .setDescription(description)
     .setColor(color)
     .setFooter({ text: footer })
     .setTimestamp();
