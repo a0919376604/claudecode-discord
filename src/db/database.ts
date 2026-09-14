@@ -127,6 +127,18 @@ export function getProject(channelId: string): Project | undefined {
     .get(channelId) as Project | undefined;
 }
 
+/**
+ * Reverse lookup: find the project (and thus channel_id) that owns a
+ * given filesystem path. Used by the wakeup legacy-adapter as a
+ * last-resort fallback when a run-plan meta file lacks channel_id.
+ * Returns undefined if no exact-match project exists.
+ */
+export function getProjectByPath(projectPath: string): Project | undefined {
+  return db
+    .prepare("SELECT * FROM projects WHERE project_path = ?")
+    .get(projectPath) as Project | undefined;
+}
+
 export function getAllProjects(guildId: string): Project[] {
   return db
     .prepare("SELECT * FROM projects WHERE guild_id = ?")

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { WakeupPayloadSchema, type WakeupPayload } from "./types.js";
+import { getProjectByPath } from "../db/database.js";
 
 interface AdapterOptions {
   /** Directory holding both done and meta files. Default: /tmp */
@@ -20,10 +21,52 @@ function parseKv(text: string): Record<string, string> {
 }
 
 /**
+ * Resolve the Discord channel for a run-plan slot, in this order:
+ *   1. `channel_id=` in the meta file (skill's Step 3 default).
+ *   2. `/tmp/run-plan-channel-<slot>.txt` (stable landmark that skill
+ *      writes ONCE at launch — survives Claude's manual retry that
+ *      rewrites the meta file with `>` and loses channel_id).
+ *   3. DB lookup by cwd: if the meta's cwd matches a bot-registered
+ *      project, use that channel. Last-resort safety net for runs
+ *      launched via a shell that didn't inherit WAKEUP_CHANNEL_ID.
+ *
+ * Returns null if none of the above yields a usable Discord snowflake.
+ * Exported for unit-test coverage of each fallback layer.
+ */
+export function resolveChannelForSlot(
+  slot: string,
+  meta: Record<string, string>,
+  opts: { channelFileDir?: string } = {},
+): string | null {
+  if (meta.channel_id && meta.channel_id.length > 0) return meta.channel_id;
+
+  const channelDir = opts.channelFileDir ?? "/tmp";
+  const channelFile = path.join(channelDir, `run-plan-channel-${slot}.txt`);
+  if (fs.existsSync(channelFile)) {
+    const contents = fs.readFileSync(channelFile, "utf-8").trim();
+    if (contents.length > 0) return contents;
+  }
+
+  if (meta.cwd && meta.cwd.length > 0) {
+    // Defensive: DB might not be initialized in test contexts, or a schema
+    // migration could throw. The fallback must never propagate an error
+    // to the wakeup dispatch path.
+    try {
+      const project = getProjectByPath(meta.cwd);
+      if (project?.channel_id) return project.channel_id;
+    } catch {
+      // ignore — treat as "no project found"
+    }
+  }
+
+  return null;
+}
+
+/**
  * Read /tmp/run-plan-done-<slot>.txt + its sibling meta file and produce a
  * WakeupPayload. Returns null if the file doesn't match the pattern, the meta
- * is missing, or channel_id wasn't recorded at launch (e.g., run launched
- * outside the bot).
+ * is missing, or all channel-resolution fallbacks failed (e.g., run launched
+ * outside the bot with no way to route back).
  */
 export function synthesizePayloadFromDoneFile(
   doneFilePath: string,
@@ -42,7 +85,7 @@ export function synthesizePayloadFromDoneFile(
   if (!fs.existsSync(metaPath)) return null;
   const meta = parseKv(fs.readFileSync(metaPath, "utf-8"));
 
-  const channelId = meta.channel_id;
+  const channelId = resolveChannelForSlot(slot, meta, { channelFileDir: metaDir });
   if (!channelId) return null;
 
   const candidate = {
