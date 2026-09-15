@@ -12,6 +12,7 @@ import {
 } from "./claude/credentials-heartbeat.js";
 import { startVpnKeepalive, stopVpnKeepalive } from "./vpn/keepalive.js";
 import { startWakeupWatcher, stopWakeupWatcher } from "./wakeup/bootstrap.js";
+import { startPidPoller, stopPidPoller } from "./wakeup/pid-poller.js";
 import { Scheduler } from "./scheduler/daemon.js";
 
 const LOCK_FILE = path.join(process.cwd(), ".bot.lock");
@@ -57,6 +58,7 @@ async function main() {
     stopCredentialsHeartbeat();
     stopVpnKeepalive();
     scheduler?.stop();
+    stopPidPoller();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
@@ -65,6 +67,7 @@ async function main() {
     stopCredentialsHeartbeat();
     stopVpnKeepalive();
     scheduler?.stop();
+    stopPidPoller();
     stopWakeupWatcher().catch(() => {});
     releaseLock();
     process.exit(0);
@@ -107,6 +110,8 @@ async function main() {
   console.log("VPN keep-alive started");
   await startWakeupWatcher();
   console.log("Wake-up watcher started");
+  startPidPoller();
+  console.log("PID poller started (detects died-codex-without-done-file every 60s)");
   scheduler = new Scheduler(client);
   await scheduler.start();
   console.log("Scheduler started");
