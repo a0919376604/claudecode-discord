@@ -19,6 +19,22 @@ export interface Session {
   created_at: string;
 }
 
+/**
+ * Tracks codex background runs launched via Claude's Bash tool, so wakeup
+ * events can be routed back to the originating Discord channel without
+ * relying on `/tmp/run-plan-meta-<slot>.txt` (which Claude's manual retry
+ * pattern is known to rewrite and drop `channel_id=` from).
+ *
+ * Populated by the PreToolUse Bash hook when Claude runs a command that
+ * matches the codex-launch pattern. Consumed by the legacy adapter (via
+ * resolveChannelForSlot fallback) and the PID poller.
+ */
+export interface RunPlanSlotRow {
+  slot: string;
+  channel_id: string;
+  launched_at: number; // unix ms
+}
+
 export type { WakeupQueueRow } from "../wakeup/types.js";
 export type { ScheduleRow } from "./schedules.js";
 export type { CronRow } from "./crons.js";

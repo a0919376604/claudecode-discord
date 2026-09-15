@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import path from "node:path";
-import type { Project, Session, SessionStatus } from "./types.js";
+import type { Project, RunPlanSlotRow, Session, SessionStatus } from "./types.js";
 
 const DB_PATH = path.join(process.cwd(), "data.db");
 
@@ -68,6 +68,22 @@ export function initDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_crons_next_fire ON crons(next_fire);
     CREATE INDEX IF NOT EXISTS idx_crons_channel ON crons(channel_id);
+
+    -- Bot-recorded codex background runs. Populated by the PreToolUse
+    -- Bash hook when Claude launches codex, so wakeup routing does not
+    -- depend on Claude preserving /tmp/run-plan-meta-<slot>.txt's
+    -- channel_id line across manual retry cycles. Consumed by the
+    -- legacy adapter (as a fallback channel resolver) and the PID
+    -- poller (which fires wakeups when codex dies without a done marker).
+    -- NO FK on channel_id — codex can be launched from an unregistered
+    -- worktree cwd but still route back to a valid channel via the
+    -- Claude session's WAKEUP_CHANNEL_ID env var.
+    CREATE TABLE IF NOT EXISTS run_plan_slots (
+      slot TEXT PRIMARY KEY,
+      channel_id TEXT NOT NULL,
+      launched_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_run_plan_slots_channel ON run_plan_slots(channel_id);
   `);
 
   // Migration: add source_path column for installations created before /worktree.
@@ -210,4 +226,34 @@ export function getAllSessions(guildId: string): (Session & { project_path: stri
       WHERE p.guild_id = ?
     `)
     .all(guildId) as (Session & { project_path: string })[];
+}
+
+// ─── run_plan_slots queries ──────────────────────────────────────────────
+// See RunPlanSlotRow docstring in db/types.ts for the rationale.
+
+/**
+ * Record (or update) a codex slot's owning Discord channel. Uses REPLACE
+ * so a re-launch of the same slot (retry, restart) refreshes the timestamp
+ * without needing a separate update path.
+ */
+export function upsertRunPlanSlot(slot: string, channelId: string, launchedAt: number): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO run_plan_slots (slot, channel_id, launched_at) VALUES (?, ?, ?)",
+  ).run(slot, channelId, launchedAt);
+}
+
+export function getRunPlanSlot(slot: string): RunPlanSlotRow | undefined {
+  return db
+    .prepare("SELECT slot, channel_id, launched_at FROM run_plan_slots WHERE slot = ?")
+    .get(slot) as RunPlanSlotRow | undefined;
+}
+
+export function listRunPlanSlots(): RunPlanSlotRow[] {
+  return db
+    .prepare("SELECT slot, channel_id, launched_at FROM run_plan_slots ORDER BY launched_at DESC")
+    .all() as RunPlanSlotRow[];
+}
+
+export function deleteRunPlanSlot(slot: string): void {
+  db.prepare("DELETE FROM run_plan_slots WHERE slot = ?").run(slot);
 }

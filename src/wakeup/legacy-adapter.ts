@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { WakeupPayloadSchema, type WakeupPayload } from "./types.js";
-import { getProjectByPath } from "../db/database.js";
+import { getProjectByPath, getRunPlanSlot } from "../db/database.js";
 
 interface AdapterOptions {
   /** Directory holding both done and meta files. Default: /tmp */
@@ -26,9 +26,14 @@ function parseKv(text: string): Record<string, string> {
  *   2. `/tmp/run-plan-channel-<slot>.txt` (stable landmark that skill
  *      writes ONCE at launch — survives Claude's manual retry that
  *      rewrites the meta file with `>` and loses channel_id).
- *   3. DB lookup by cwd: if the meta's cwd matches a bot-registered
- *      project, use that channel. Last-resort safety net for runs
- *      launched via a shell that didn't inherit WAKEUP_CHANNEL_ID.
+ *   3. `run_plan_slots` DB table (bot's PreToolUse Bash hook records
+ *      slot → channel_id on codex launch — works even when Claude
+ *      never runs SKILL.md's Step 3, i.e. ad-hoc `nohup codex exec`
+ *      retries).
+ *   4. DB lookup by cwd: if the meta's cwd matches a bot-registered
+ *      project, use that channel. Absolute last resort — only helps
+ *      when the codex launch's log path was somehow un-parseable but
+ *      the project cwd is known.
  *
  * Returns null if none of the above yields a usable Discord snowflake.
  * Exported for unit-test coverage of each fallback layer.
@@ -47,15 +52,21 @@ export function resolveChannelForSlot(
     if (contents.length > 0) return contents;
   }
 
+  // DB slot lookup (populated by PreToolUse Bash hook). Defensive:
+  // must not throw in test contexts where DB isn't initialized.
+  try {
+    const row = getRunPlanSlot(slot);
+    if (row?.channel_id) return row.channel_id;
+  } catch {
+    // ignore
+  }
+
   if (meta.cwd && meta.cwd.length > 0) {
-    // Defensive: DB might not be initialized in test contexts, or a schema
-    // migration could throw. The fallback must never propagate an error
-    // to the wakeup dispatch path.
     try {
       const project = getProjectByPath(meta.cwd);
       if (project?.channel_id) return project.channel_id;
     } catch {
-      // ignore — treat as "no project found"
+      // ignore
     }
   }
 

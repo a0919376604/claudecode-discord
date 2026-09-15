@@ -121,4 +121,18 @@ describe("synthesizePayloadFromDoneFile", () => {
     const meta = { channel_id: "", cwd: "/some" };
     expect(resolveChannelForSlot("e", meta, { channelFileDir: tmp })).toBe("123456789012345678");
   });
+
+  // The DB slot fallback (layer 3) is populated by the PreToolUse Bash hook.
+  // We validate the shape here — the hook itself is unit-tested in
+  // src/hooks/bash-launch.test.ts. Without a real DB in this test context,
+  // the DB call throws → the fallback's try/catch swallows it → we advance
+  // to the cwd fallback. Confirming that ordering.
+  it("resolveChannelForSlot: DB slot fallback swallows errors from uninitialized DB", () => {
+    // Neither meta.channel_id, nor channel file, nor DB, nor cwd → null.
+    // The important check: this call does NOT throw.
+    expect(() =>
+      resolveChannelForSlot("bash-launched-slot", {}, { channelFileDir: tmp }),
+    ).not.toThrow();
+    expect(resolveChannelForSlot("bash-launched-slot", {}, { channelFileDir: tmp })).toBeNull();
+  });
 });
