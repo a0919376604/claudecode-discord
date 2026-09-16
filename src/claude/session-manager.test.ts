@@ -248,6 +248,31 @@ describe("SessionManager.wakeUp", () => {
     expect(calls[0].prompt).toContain("chat_id=\"123456789012345678\"");
     expect(calls[0].prompt).toContain("/run-plan status foo");
   });
+
+  // Regression test for the "codex done → empty Task completed" bug (Sep 17):
+  //
+  // /run-plan Step 7 reads the <channel source="discord" ...> tag and instructs
+  // Claude to call a Discord "reply" MCP tool with the summary. That tool
+  // either doesn't exist inside the bot's SDK session OR fails when the
+  // discord MCP plugin is disconnected — the woken Claude then produces no
+  // text output, and the user sees an empty green "Task completed" instead
+  // of the codex verification report.
+  //
+  // Fix: preamble must include an explicit IN_BOT_SESSION override telling
+  // Claude to print the report as plain text (which streams to Discord via
+  // ClaudeBackend's text_delta events automatically).
+  it("prompt includes IN_BOT_SESSION override so Claude prints text instead of calling Discord reply tool", async () => {
+    const calls: { prompt: string }[] = [];
+    sessionManager.sendMessage = async (_channel: { id: string }, prompt: string) => {
+      calls.push({ prompt });
+    };
+    // @ts-expect-error - minimal channel stub
+    await sessionManager.wakeUp({ id: "123" }, "/run-plan status bar", "run-plan-poller");
+    expect(calls[0].prompt).toContain("IN_BOT_SESSION");
+    // Preamble may wrap across lines — use dotall (`s` flag) so `.` matches newlines.
+    expect(calls[0].prompt).toMatch(/print[\s\S]*(report|status)[\s\S]*response body/i);
+    expect(calls[0].prompt).toMatch(/no Discord[\s\S]*"reply"[\s\S]*tool/i);
+  });
 });
 
 describe("query env injection", () => {

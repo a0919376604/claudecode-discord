@@ -628,6 +628,16 @@ class SessionManager {
    * tagged with a Discord channel-context preamble so any skill that
    * scans conversation history (notably /run-plan Step 7) routes its
    * completion reply back to this Discord channel.
+   *
+   * The IN_BOT_SESSION override in the preamble is deliberate: /run-plan
+   * Step 7 tells Claude to call a Discord "reply" MCP tool when it sees
+   * `<channel source="discord" ...>`. That tool doesn't exist inside a
+   * bot-launched SDK session (or fails when the discord plugin is
+   * disconnected) — the result was Claude producing zero text output,
+   * so users saw an empty green "Task completed" instead of the codex
+   * status report. Since Claude's text output ALREADY streams to
+   * Discord via ClaudeBackend's text_delta events, we tell Claude
+   * explicitly: just print the report, no tool needed.
    */
   async wakeUp(
     channel: TextChannel,
@@ -637,6 +647,14 @@ class SessionManager {
     const preamble =
       `<channel source="discord" chat_id="${channel.id}" user="wakeup:${source}" ts="${new Date().toISOString()}">\n` +
       `wakeup-prompt source=${source}\n` +
+      `\n` +
+      `IN_BOT_SESSION: You are running inside the claudecode-discord bot as a woken\n` +
+      `session on the Discord channel above. Your normal response text streams\n` +
+      `directly to that Discord channel — no Discord "reply" MCP tool call is\n` +
+      `needed or available. When a skill (e.g. /run-plan Step 7) instructs you to\n` +
+      `"call the Discord reply tool with the summary", instead **print the\n` +
+      `verification report / status update as your regular response body**. The bot\n` +
+      `handles routing. Keep the report mobile-friendly (short, no giant logs).\n` +
       `</channel>\n\n`;
     await this.sendMessage(channel, preamble + prompt);
   }
