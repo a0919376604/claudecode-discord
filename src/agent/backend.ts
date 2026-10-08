@@ -2,7 +2,7 @@ import type { TextChannel } from "discord.js";
 import type { AskQuestionData } from "../claude/output-formatter.js";
 
 export type NormalizedEvent =
-  | { type: "session_init"; sessionId: string }
+  | { type: "session_init"; sessionId: string; model?: string }
   | { type: "text_delta"; text: string; isReasoning?: boolean }
   | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
   | { type: "tool_end"; toolName: string; ok: boolean }

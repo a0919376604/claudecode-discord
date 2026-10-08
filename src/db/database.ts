@@ -100,6 +100,12 @@ export function initDatabase(): void {
   if (!cols.some((c) => c.name === "backend")) {
     db.exec("ALTER TABLE projects ADD COLUMN backend TEXT NOT NULL DEFAULT 'claude'");
   }
+
+  // Migration: remember the last Claude model seen per channel so the bot
+  // can announce when an SDK update switches the default model.
+  if (!cols.some((c) => c.name === "last_model")) {
+    db.exec("ALTER TABLE projects ADD COLUMN last_model TEXT");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -177,6 +183,13 @@ export function setBackend(
 ): void {
   db.prepare("UPDATE projects SET backend = ? WHERE channel_id = ?").run(
     backend,
+    channelId,
+  );
+}
+
+export function setLastModel(channelId: string, model: string): void {
+  db.prepare("UPDATE projects SET last_model = ? WHERE channel_id = ?").run(
+    model,
     channelId,
   );
 }

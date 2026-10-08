@@ -17,7 +17,8 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
   if (m.type === "system" && (m as { subtype?: string }).subtype === "init") {
     const sessionId = (m as { session_id?: string }).session_id;
     if (!sessionId) return null;
-    return { type: "session_init", sessionId };
+    const model = (m as { model?: string }).model;
+    return model ? { type: "session_init", sessionId, model } : { type: "session_init", sessionId };
   }
 
   if (m.type === "assistant") {

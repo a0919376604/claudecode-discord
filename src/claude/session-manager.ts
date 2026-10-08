@@ -4,6 +4,7 @@ import {
   upsertSession,
   updateSessionStatus,
   getProject,
+  setLastModel,
   getSession,
   setAutoApprove,
 } from "../db/database.js";
@@ -171,6 +172,8 @@ class SessionManager {
     let toolUseCount = 0;
     let hasTextOutput = false;
     let hasResult = false;
+    let model: string | undefined;
+    let lastModel = project.last_model ?? null;
     // Timestamp of the last assistant-text streaming edit. Used to decide
     // whether the post-text phase has been silent long enough that we should
     // surface a separate "still working" progress message.
@@ -312,6 +315,18 @@ class SessionManager {
                 const active = this.sessions.get(channelId);
                 if (active) active.sessionId = event.sessionId;
                 upsertSession(dbId, channelId, event.sessionId, "online");
+                if (event.model && event.model !== lastModel) {
+                  // First sighting just records; a real change gets announced.
+                  if (lastModel) {
+                    await channel.send(L(
+                      `🆕 Claude model changed: \`${lastModel}\` → \`${event.model}\``,
+                      `🆕 Claude 모델 변경: \`${lastModel}\` → \`${event.model}\``,
+                    )).catch(() => {});
+                  }
+                  setLastModel(channelId, event.model);
+                  lastModel = event.model;
+                }
+                model = event.model ?? model;
                 break;
               }
 
@@ -469,6 +484,7 @@ class SessionManager {
                   Date.now() - startTime,
                   getConfig().SHOW_COST,
                   isError,
+                  model,
                 );
                 await channel.send({
                   embeds: [resultEmbed],

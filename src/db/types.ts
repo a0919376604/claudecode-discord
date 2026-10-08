@@ -7,6 +7,7 @@ export interface Project {
   auto_approve: number; // 0 or 1
   source_path: string | null; // NULL for /register, absolute path for /worktree
   backend: "claude" | "codex";
+  last_model?: string | null; // last Claude model seen in this channel
   created_at: string;
 }
 

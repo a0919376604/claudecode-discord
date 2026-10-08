@@ -7,6 +7,11 @@ describe("sdkMessageToEvent", () => {
     expect(sdkMessageToEvent(msg)).toEqual({ type: "session_init", sessionId: "abc-123" });
   });
 
+  it("carries the model from system init", () => {
+    const msg = { type: "system", subtype: "init", session_id: "abc-123", model: "claude-opus-5-5" };
+    expect(sdkMessageToEvent(msg)).toEqual({ type: "session_init", sessionId: "abc-123", model: "claude-opus-5-5" });
+  });
+
   it("ignores system messages without session_id", () => {
     expect(sdkMessageToEvent({ type: "system", subtype: "init" })).toBeNull();
   });
