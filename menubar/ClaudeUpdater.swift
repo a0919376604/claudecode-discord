@@ -4,6 +4,44 @@ import Foundation
 /// Kept side-effect-free so all functions can be unit-tested.
 enum ClaudeUpdater {
 
+    // MARK: - Shell PATH
+
+    /// Prepended to every shell-out. Launched from Finder / a login item the
+    /// app inherits PATH=/usr/bin:/bin:/usr/sbin:/sbin — npm, node and claude
+    /// live in none of those, so `npm view` returned "" and the updater
+    /// recorded "npm view failed (network?)" on every tick instead of ever
+    /// updating. path_helper replays /etc/paths.d (where Homebrew registers
+    /// itself); the literals cover machines where it didn't.
+    /// ponytail: deliberately not a login shell — sourcing ~/.bash_profile
+    /// would let a user's `echo` corrupt parsed output (npm view,
+    /// claude --version). nvm/fnm layouts are version-pathed and still need
+    /// PATH exported by launchd; add them here if that ever shows up.
+    static let shellPathPrelude =
+        "eval \"$(/usr/libexec/path_helper -s)\" >/dev/null 2>&1; "
+        + "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.volta/bin\"; "
+
+    // MARK: - Main-thread hop
+
+    /// Runs `work` on the main thread, synchronously if already there.
+    ///
+    /// The Claude update flow runs on a background queue on purpose (npm
+    /// install blocks ~90s and would freeze the tray). From there it calls
+    /// stopBot()/startBot(), which refresh the menu and the control panel —
+    /// AppKit, which aborts the process when touched off the main thread:
+    ///
+    ///     rebuildControlPanel → NSView.addSubview → NSException → SIGABRT
+    ///
+    /// That crashed the app during applicationDidFinishLaunching on every
+    /// launch where an SDK update was pending, so the panel died on each
+    /// restart and only came back at next login.
+    static func onMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread {
+            work()
+        } else {
+            DispatchQueue.main.async(execute: work)
+        }
+    }
+
     // MARK: - Types
 
     enum Kind: String, Codable {

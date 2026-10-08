@@ -249,3 +249,52 @@ import Foundation
     #expect(result[0].logSnippet == "new snippet")
     #expect(result[0].lastFailedAt == now)
 }
+
+// MARK: - Shell PATH prelude
+
+/// Regression: the app runs with PATH=/usr/bin:/bin:/usr/sbin:/sbin when
+/// launched from Finder, where npm does not exist. Without the prelude every
+/// `npm view` returned "" and the SDK auto-updater froze (stuck on 0.3.268 for
+/// 27 days while logging "npm view failed (network?)").
+@Test func shellPathPreludeFindsNpmUnderFinderPath() throws {
+    let task = Process()
+    task.launchPath = "/bin/bash"
+    task.arguments = ["-c", ClaudeUpdater.shellPathPrelude + "command -v npm"]
+    task.environment = [
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": NSHomeDirectory(),
+    ]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = Pipe()
+    try task.run()
+    task.waitUntilExit()
+    let found = String(
+        data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+    )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    #expect(task.terminationStatus == 0, "npm not resolvable: updater will no-op")
+    #expect(found.hasSuffix("/npm"))
+}
+
+// MARK: - Main-thread hop
+
+/// Regression: the background SDK updater called stopBot() -> buildMenu() /
+/// rebuildControlPanel(), touching AppKit off the main thread. That aborted
+/// the process (SIGABRT in NSView.addSubview) during launch whenever an SDK
+/// update was pending, so the app died on every restart until next login.
+@Test func onMainHopsOffMainWorkToMainThread() async {
+    let landed = await withCheckedContinuation { (k: CheckedContinuation<Bool, Never>) in
+        DispatchQueue.global(qos: .background).async {
+            #expect(!Thread.isMainThread, "precondition: must start off main")
+            ClaudeUpdater.onMain { k.resume(returning: Thread.isMainThread) }
+        }
+    }
+    #expect(landed)
+}
+
+@Test @MainActor func onMainRunsInlineWhenAlreadyOnMain() {
+    var ran = false
+    ClaudeUpdater.onMain { ran = true }
+    #expect(ran, "must run synchronously on main, not deferred")
+}

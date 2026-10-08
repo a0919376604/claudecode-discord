@@ -159,6 +159,14 @@ cat > "$MENUBAR_PLIST_DST" <<MBEOF
     <string>$SCRIPT_DIR</string>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Relaunch only on abnormal exit. A crash used to leave the panel dead
+         until the next login (users rebooted to get it back); a clean Quit,
+         SIGTERM or launchctl bootout all exit 0 and are left alone. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardOutPath</key>
     <string>/dev/null</string>
     <key>StandardErrorPath</key>

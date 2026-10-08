@@ -390,6 +390,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildMenu() {
+        // AppKit is main-thread-only; the background update flow reaches here
+        // via stopBot()/startBot(). Guard here, not at each caller.
+        guard Thread.isMainThread else {
+            ClaudeUpdater.onMain { [weak self] in self?.buildMenu() }
+            return
+        }
         let menu = NSMenu()
         let running = isRunning()
         let hasEnv = isEnvConfigured()
@@ -829,6 +835,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildControlPanel() {
+        // AppKit is main-thread-only. This is the frame that aborted the
+        // process when the background SDK updater called stopBot().
+        guard Thread.isMainThread else {
+            ClaudeUpdater.onMain { [weak self] in self?.rebuildControlPanel() }
+            return
+        }
         guard let window = controlPanel else { return }
 
         let panelWidth = window.frame.width
@@ -1200,6 +1212,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         window.contentView = contentView
+        window.displayIfNeeded()
     }
 
     // MARK: - UI Helpers
@@ -1679,8 +1692,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         updateStatus()
         buildMenu()
-        rebuildControlPanel()
-        controlPanel?.displayIfNeeded()
+        rebuildControlPanel()  // hops to main and calls displayIfNeeded itself
     }
 
     @objc private func restartBot() {
@@ -1725,7 +1737,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func runShell(_ command: String) -> String {
         let task = Process()
         task.launchPath = "/bin/bash"
-        task.arguments = ["-c", command]
+        task.arguments = ["-c", ClaudeUpdater.shellPathPrelude + command]
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
@@ -2148,9 +2160,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let wasRunning = isRunning()
         if wasRunning { stopBot() }
 
-        // Install new
+        // Install new. --no-save on purpose: package.json is tracked, and the
+        // app self-update runs `git reset --hard origin/main && npm install`,
+        // which would discard a --save'd pin and reinstall whatever main
+        // declares — silently downgrading the SDK the updater just installed.
+        // The version lives in node_modules (readSdkCurrentVersion reads it
+        // from there), so nothing needs the tracked file written.
         let installOut = runShell(
-            "cd '\(botDir)' && npm install @anthropic-ai/claude-agent-sdk@\(latest) --save 2>&1")
+            "cd '\(botDir)' && npm install @anthropic-ai/claude-agent-sdk@\(latest) --no-save 2>&1")
         try? installOut.write(
             to: snapshot.appendingPathComponent("install.log"),
             atomically: true, encoding: .utf8)
