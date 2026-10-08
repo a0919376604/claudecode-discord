@@ -106,6 +106,14 @@ export function initDatabase(): void {
   if (!cols.some((c) => c.name === "last_model")) {
     db.exec("ALTER TABLE projects ADD COLUMN last_model TEXT");
   }
+
+  // Migration: per-channel /model and /effort overrides (NULL = default).
+  if (!cols.some((c) => c.name === "model")) {
+    db.exec("ALTER TABLE projects ADD COLUMN model TEXT");
+  }
+  if (!cols.some((c) => c.name === "effort")) {
+    db.exec("ALTER TABLE projects ADD COLUMN effort TEXT");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -190,6 +198,18 @@ export function setBackend(
 export function setLastModel(channelId: string, model: string): void {
   db.prepare("UPDATE projects SET last_model = ? WHERE channel_id = ?").run(
     model,
+    channelId,
+  );
+}
+
+/** Set a per-channel /model or /effort override; null resets to default. */
+export function setChannelOverride(
+  channelId: string,
+  key: "model" | "effort",
+  value: string | null,
+): void {
+  db.prepare(`UPDATE projects SET ${key} = ? WHERE channel_id = ?`).run(
+    value,
     channelId,
   );
 }

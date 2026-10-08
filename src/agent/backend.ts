@@ -14,6 +14,9 @@ export type NormalizedEvent =
   // codex will ignore it.
   | { type: "ask_question_request"; requestId: string; questions: AskQuestionData[] };
 
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
 export interface BackendStartOptions {
   prompt: string;
   cwd: string;
@@ -22,6 +25,7 @@ export interface BackendStartOptions {
   channelId: string;
   channel: TextChannel;
   model?: string;
+  effort?: EffortLevel;
 }
 
 export interface AgentBackend {

@@ -20,6 +20,7 @@ import {
   getProject,
   getAllProjects,
   setAutoApprove,
+  setChannelOverride,
   upsertSession,
   getSession,
   updateSessionStatus,
@@ -81,6 +82,16 @@ describe("database", () => {
 
       setAutoApprove("ch1", false);
       expect(getProject("ch1")!.auto_approve).toBe(0);
+    });
+
+    it("setChannelOverride sets and resets model/effort", () => {
+      registerProject("ch1", "/p", "g1");
+      expect(getProject("ch1")?.model).toBeNull();
+      setChannelOverride("ch1", "model", "opus");
+      setChannelOverride("ch1", "effort", "high");
+      expect(getProject("ch1")).toMatchObject({ model: "opus", effort: "high" });
+      setChannelOverride("ch1", "model", null);
+      expect(getProject("ch1")?.model).toBeNull();
     });
 
     it("registerProject sets source_path to NULL by default", () => {

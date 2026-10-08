@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { EffortLevel } from "../agent/backend.js";
 import type { Message, TextChannel } from "discord.js";
 import {
   upsertSession,
@@ -292,7 +293,8 @@ class SessionManager {
         skipPermissions: isSkipPermissionsEnabled(),
         channelId,
         channel,   // required field — see ledger Ruling R2 (Task 4 fix round 1)
-        model: getConfig().CLAUDE_MODEL,
+        model: project.model ?? getConfig().CLAUDE_MODEL,
+        effort: (project.effort ?? undefined) as EffortLevel | undefined,
       });
 
     let eventStream = runBackend(Boolean(resumeSessionId));

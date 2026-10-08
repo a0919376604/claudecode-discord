@@ -77,6 +77,7 @@ export class ClaudeBackend implements AgentBackend {
         },
         ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}),
         ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
         hooks: {
           PreToolUse: [{
             hooks: [createPreToolUseHook({

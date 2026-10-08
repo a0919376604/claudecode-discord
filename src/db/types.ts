@@ -8,6 +8,8 @@ export interface Project {
   source_path: string | null; // NULL for /register, absolute path for /worktree
   backend: "claude" | "codex";
   last_model?: string | null; // last Claude model seen in this channel
+  model?: string | null; // /model override; NULL = CLAUDE_MODEL / SDK default
+  effort?: string | null; // /effort override; NULL = model default
   created_at: string;
 }
 
