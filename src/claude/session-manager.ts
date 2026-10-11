@@ -186,6 +186,22 @@ class SessionManager {
     let progressMessage = null as Message | null;
 
     /**
+     * Push responseBuffer to Discord. If the current message was finalized
+     * (an approval / question / progress message now sits below it), start a
+     * fresh message instead of editing text the user already scrolled past.
+     */
+    const flushText = async () => {
+      if (responseBuffer.length === 0) return;
+      if (bufferFinalized) {
+        currentMessage = await channel.send("...");
+        bufferFinalized = false;
+      }
+      const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
+      currentMessage = tail;
+      responseBuffer = remainingBuffer;
+    };
+
+    /**
      * Single entry point for "show the user we're still working." Dispatches
      * to either the initial Thinking message (pre-text) or a separate
      * progress message (post-text, when streaming has been silent for a
@@ -332,6 +348,18 @@ class SessionManager {
               }
 
               case "text_delta": {
+                if (progressMessage) {
+                  // Text resumed after a silent phase. Drop the progress
+                  // placeholder (and its Stop button) and continue in a new
+                  // message below it — otherwise every silent phase leaves an
+                  // orphaned "Thinking… [Stop]" and new text gets appended to
+                  // the old message above them.
+                  await flushText();
+                  progressMessage.delete().catch(() => {});
+                  progressMessage = null;
+                  responseBuffer = "";
+                  bufferFinalized = true;
+                }
                 // Each event is a whole assistant text block; keep blocks from
                 // separate turns from gluing together ("...file.Done").
                 responseBuffer += responseBuffer.length > 0 ? `\n\n${event.text}` : event.text;
@@ -340,14 +368,7 @@ class SessionManager {
                 if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
                   lastEditTime = now;
                   lastTextTime = now;
-                  progressMessage = null;
-                  if (bufferFinalized) {
-                    currentMessage = await channel.send("...");
-                    bufferFinalized = false;
-                  }
-                  const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
-                  responseBuffer = remainingBuffer;
+                  await flushText();
                 }
                 break;
               }
@@ -376,8 +397,7 @@ class SessionManager {
               case "tool_approval_request": {
                 // Flush buffered text so user sees Claude's explanation before the button
                 if (responseBuffer.length > 0) {
-                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
+                  await flushText();
                   responseBuffer = "";
                   bufferFinalized = true;
                   lastEditTime = Date.now();
@@ -415,8 +435,7 @@ class SessionManager {
 
               case "ask_question_request": {
                 if (responseBuffer.length > 0) {
-                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
+                  await flushText();
                   responseBuffer = "";
                   bufferFinalized = true;
                   lastEditTime = Date.now();
@@ -468,10 +487,8 @@ class SessionManager {
                 const isError = event.isError;
                 const resultText = event.text;
                 if (responseBuffer.length > 0) {
-                  const chunks = splitMessage(responseBuffer);
                   try {
-                    await currentMessage.edit(chunks[0] || L("Done.", "완료."));
-                    for (let i = 1; i < chunks.length; i++) await channel.send(chunks[i]);
+                    await flushText();
                   } catch (e) {
                     console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
                   }
