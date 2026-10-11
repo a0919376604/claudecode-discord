@@ -54,8 +54,8 @@ const PROGRESS_STALE_MS = Number(process.env.PROGRESS_STALE_MS) > 0
  * Returns the new "tail" Message (callers should treat this as the new
  * currentMessage for any subsequent streaming) and a `remainingBuffer`
  * value that callers in the throttle path should assign back to their
- * local buffer to preserve the existing cumulative-buffer behavior
- * (single-chunk: buffer preserved; multi-chunk overflow: buffer drained).
+ * local buffer: whatever text `tail` currently shows (single-chunk: the
+ * whole buffer; multi-chunk overflow: the last chunk).
  *
  * Empty buffer is a zero-API-call no-op.
  *
@@ -79,14 +79,13 @@ export async function flushStreamBuffer(
       content: chunks[0] || "...",
       components: [],
     });
-    // Send overflow chunks as new messages. We track remainingBuffer the
-    // way the original throttle path did: after each send, drop the
-    // already-sent prefix so a future edit of `tail` (the new
-    // currentMessage) won't re-render text the user has already seen.
+    // Send overflow chunks as new messages.
     for (let i = 1; i < chunks.length; i++) {
       tail = await channel.send(chunks[i]);
-      remainingBuffer = chunks.slice(i + 1).join("");
     }
+    // tail now shows the last chunk; keep it in the buffer so the next edit
+    // of tail appends to it instead of overwriting it.
+    if (chunks.length > 1) remainingBuffer = chunks[chunks.length - 1];
   } catch (e) {
     console.warn(
       `[flush] Failed to edit ${currentMessage.id ?? "(unknown id)"}, sending new:`,
@@ -333,7 +332,9 @@ class SessionManager {
               }
 
               case "text_delta": {
-                responseBuffer += event.text;
+                // Each event is a whole assistant text block; keep blocks from
+                // separate turns from gluing together ("...file.Done").
+                responseBuffer += responseBuffer.length > 0 ? `\n\n${event.text}` : event.text;
                 hasTextOutput = true;
                 const now = Date.now();
                 if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
@@ -480,8 +481,10 @@ class SessionManager {
                 } catch (e) {
                   console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
                 }
+                // Text already streamed as plain messages (copyable on mobile);
+                // don't repeat it inside the embed. Errors aren't streamed.
                 const resultEmbed = createResultEmbed(
-                  resultText,
+                  hasTextOutput && !isError ? "" : resultText,
                   event.costUsd,
                   Date.now() - startTime,
                   getConfig().SHOW_COST,

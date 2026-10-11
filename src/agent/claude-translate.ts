@@ -22,7 +22,7 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
   }
 
   if (m.type === "assistant") {
-    const content = (m as { content?: unknown }).content;
+    const content = assistantContent(m);
     if (!Array.isArray(content) || content.length === 0) return null;
     const first = content[0];
     if (first && typeof first === "object" && "text" in first && typeof (first as { text: unknown }).text === "string") {
@@ -65,7 +65,7 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
  */
 export function assistantContentToEvents(msg: unknown): NormalizedEvent[] {
   if (!msg || typeof msg !== "object" || (msg as { type?: string }).type !== "assistant") return [];
-  const content = (msg as { content?: unknown }).content;
+  const content = assistantContent(msg);
   if (!Array.isArray(content)) return [];
   const out: NormalizedEvent[] = [];
   for (const block of content) {
@@ -74,4 +74,12 @@ export function assistantContentToEvents(msg: unknown): NormalizedEvent[] {
     }
   }
   return out;
+}
+
+// Real SDKAssistantMessage nests blocks under `message.content` (BetaMessage).
+// Reading top-level `content` only matched hand-written test fixtures, so no
+// text_delta ever fired and replies only showed up inside the result embed.
+function assistantContent(msg: object): unknown {
+  return (msg as { message?: { content?: unknown } }).message?.content
+    ?? (msg as { content?: unknown }).content;
 }
