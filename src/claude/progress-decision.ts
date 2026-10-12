@@ -70,8 +70,15 @@ export function buildProgressContent(
   activity: string,
   elapsedMs: number,
   toolUseCount: number,
+  backgroundTasks: string[] = [],
 ): string {
   const timeStr = formatElapsed(elapsedMs);
   const toolStr = toolUseCount > 0 ? ` [${toolUseCount} tools used]` : "";
-  return `⏳ ${activity} (${timeStr})${toolStr}`;
+  // ponytail: first 3 tasks, 80 chars each — keeps the line mobile-sized.
+  const bg = backgroundTasks
+    .slice(0, 3)
+    .map((d) => `\n🔄 Background: ${d.length > 80 ? `${d.slice(0, 79)}…` : d}`)
+    .join("");
+  const more = backgroundTasks.length > 3 ? `\n🔄 +${backgroundTasks.length - 3} more` : "";
+  return `⏳ ${activity} (${timeStr})${toolStr}${bg}${more}`;
 }

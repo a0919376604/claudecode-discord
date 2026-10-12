@@ -170,6 +170,7 @@ class SessionManager {
     const startTime = Date.now();
     let lastActivity = L("Thinking...", "생각 중...");
     let toolUseCount = 0;
+    let backgroundTasks: string[] = [];
     let hasTextOutput = false;
     let hasResult = false;
     let model: string | undefined;
@@ -207,11 +208,12 @@ class SessionManager {
      * progress message (post-text, when streaming has been silent for a
      * while). See progress-decision.ts for the rationale.
      */
-    const surfaceProgress = async () => {
+    const surfaceProgress = async (force = false) => {
       const content = buildProgressContent(
         lastActivity,
         Date.now() - startTime,
         toolUseCount,
+        backgroundTasks,
       );
       const action = decideProgressAction({
         hasTextOutput,
@@ -224,6 +226,11 @@ class SessionManager {
       try {
         switch (action) {
           case "skip":
+            // Recent text normally suppresses progress, but a background
+            // task starting is news the user should see right away.
+            if (!force) return;
+            if (progressMessage) await progressMessage.edit({ content, components: [stopRow] });
+            else progressMessage = await channel.send({ content, components: [stopRow] });
             return;
           case "edit-current":
             await currentMessage.edit({ content, components: [stopRow] });
@@ -476,6 +483,13 @@ class SessionManager {
                 } else {
                   backend.respondToQuestion(event.requestId, answers);
                 }
+                break;
+              }
+
+              case "background_tasks": {
+                const started = event.descriptions.some((d) => !backgroundTasks.includes(d));
+                backgroundTasks = event.descriptions;
+                await surfaceProgress(started);
                 break;
               }
 

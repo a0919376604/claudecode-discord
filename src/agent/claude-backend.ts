@@ -141,22 +141,47 @@ export class ClaudeBackend implements AgentBackend {
     // SDK-message pump is blocked.
     let sdkDone = false;
     let sdkError: unknown = null;
+    // A result is not the end of the run while background tasks (e.g. a
+    // test suite started with run_in_background) are live: the CLI waits
+    // for them, delivers a task_notification and runs another turn with its
+    // own result. Returning on the first result closed the query and killed
+    // those tasks ("the full test run was interrupted when the session
+    // ended"). Hold the result until no non-ambient task is live.
+    let liveTasks = 0;
+    let heldResult: NormalizedEvent | null = null;
     const sdkPump = (async () => {
       try {
         for await (const message of this.queryInstance!) {
-          if ((message as { type?: string }).type === "assistant") {
+          const m = message as { type?: string; subtype?: string; tasks?: { ambient?: boolean; description?: string }[] };
+          if (m.type === "assistant") {
             for (const ev of assistantContentToEvents(message)) this.pushEvent(ev);
             continue;
           }
-          const translated = sdkMessageToEvent(message);
-          if (translated) {
-            this.pushEvent(translated);
-            if (translated.type === "result") return;
+          if (m.type === "system" && m.subtype === "background_tasks_changed") {
+            const live = (m.tasks ?? []).filter((t) => !t.ambient);
+            liveTasks = live.length;
+            this.pushEvent({ type: "background_tasks", descriptions: live.map((t) => t.description || "task") });
+            continue;
           }
+          const translated = sdkMessageToEvent(message);
+          if (!translated) continue;
+          if (translated.type === "result") {
+            if (liveTasks > 0) {
+              heldResult = translated;
+              continue;
+            }
+            heldResult = null;
+            this.pushEvent(translated);
+            return;
+          }
+          this.pushEvent(translated);
         }
       } catch (e) {
         sdkError = e;
       } finally {
+        // Stream ended (or errored) while a result was held — still deliver
+        // it so the turn closes with a result embed.
+        if (heldResult && !sdkError) this.pushEvent(heldResult);
         sdkDone = true;
         // Wake main loop if it's currently awaiting the resolver
         if (this.queueResolver) {
