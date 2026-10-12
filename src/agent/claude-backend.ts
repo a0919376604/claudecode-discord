@@ -6,7 +6,7 @@ import { ensureFreshCredentials } from "../claude/credentials-refresher.js";
 import { createPreToolUseHook } from "../hooks/pre-tool-use.js";
 import { resolveWakeupDir } from "../wakeup/paths.js";
 import type { AgentBackend, BackendStartOptions, NormalizedEvent } from "./backend.js";
-import { assistantContentToEvents, sdkMessageToEvent } from "./claude-translate.js";
+import { assistantContentToEvents, sdkMessageToEvent, translateTaskMessage, type TaskTranslateState } from "./claude-translate.js";
 
 const READ_ONLY_TOOLS = new Set([
   "Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite",
@@ -78,6 +78,9 @@ export class ClaudeBackend implements AgentBackend {
         ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
+        // One-line model-written progress per background agent (~every 30s),
+        // shown on the task board.
+        agentProgressSummaries: true,
         hooks: {
           PreToolUse: [{
             hooks: [createPreToolUseHook({
@@ -152,17 +155,18 @@ export class ClaudeBackend implements AgentBackend {
     // stream (verified: ~1.5s after the final result) and deliver only the
     // last result. Restores the pre-2026-09-08 loop behavior.
     let heldResult: NormalizedEvent | null = null;
+    const taskState: TaskTranslateState = { known: new Set(), errors: new Map() };
     const sdkPump = (async () => {
       try {
         for await (const message of this.queryInstance!) {
-          const m = message as { type?: string; subtype?: string; tasks?: { ambient?: boolean; description?: string }[] };
+          const m = message as { type?: string; subtype?: string };
           if (m.type === "assistant") {
             for (const ev of assistantContentToEvents(message)) this.pushEvent(ev);
             continue;
           }
-          if (m.type === "system" && m.subtype === "background_tasks_changed") {
-            const live = (m.tasks ?? []).filter((t) => !t.ambient);
-            this.pushEvent({ type: "background_tasks", descriptions: live.map((t) => t.description || "task") });
+          if (m.type === "system" && (m.subtype === "background_tasks_changed" || m.subtype?.startsWith("task_"))) {
+            const ev = translateTaskMessage(message, taskState);
+            if (ev) this.pushEvent(ev);
             continue;
           }
           const translated = sdkMessageToEvent(message);

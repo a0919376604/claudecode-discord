@@ -6,8 +6,19 @@ export type NormalizedEvent =
   | { type: "text_delta"; text: string; isReasoning?: boolean }
   | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
   | { type: "tool_end"; toolName: string; ok: boolean }
-  // Full set of live background tasks (REPLACE semantics), by description.
-  | { type: "background_tasks"; descriptions: string[] }
+  // Full set of live background tasks (REPLACE semantics).
+  | { type: "background_tasks"; tasks: { id: string; description: string; taskType: string }[] }
+  | { type: "task_progress"; id: string; summary?: string; lastTool?: string; toolUses?: number }
+  | {
+      type: "task_done";
+      id: string;
+      status: "completed" | "failed" | "stopped" | "interrupted";
+      summary?: string;
+      error?: string;
+      toolUses?: number;
+      durationMs?: number;
+      outputFile?: string;
+    }
   | { type: "result"; text: string; costUsd?: number; isError: boolean }
   | { type: "tool_approval_request"; requestId: string; toolName: string; input: Record<string, unknown> }
   // AskUserQuestion — only Claude backend emits this. Codex has no

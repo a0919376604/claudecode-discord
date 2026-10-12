@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sdkMessageToEvent, assistantContentToEvents } from "./claude-translate.js";
+import { sdkMessageToEvent, assistantContentToEvents, translateTaskMessage, type TaskTranslateState } from "./claude-translate.js";
 
 describe("sdkMessageToEvent", () => {
   it("translates system init to session_init", () => {
@@ -118,5 +118,46 @@ describe("sdkMessageToEvent", () => {
   it("filters empty strings when joining error messages", () => {
     const msg = { type: "result", is_error: true, errors: ["", "real error", ""] };
     expect(sdkMessageToEvent(msg)).toMatchObject({ text: "real error", isError: true });
+  });
+});
+
+// Shapes below are copied from a real SDK 0.3.293 run (2026-10-12) with two
+// background agents: the agents' own inner Bash calls emitted task_started /
+// task_notification but never joined background_tasks_changed.
+describe("translateTaskMessage", () => {
+  const fresh = (): TaskTranslateState => ({ known: new Set(), errors: new Map() });
+  const sys = (subtype: string, rest: Record<string, unknown>) => ({ type: "system", subtype, ...rest });
+
+  it("reports the live set (non-ambient) and remembers those ids", () => {
+    const st = fresh();
+    const ev = translateTaskMessage(sys("background_tasks_changed", { tasks: [
+      { task_id: "a1", task_type: "local_agent", description: "Agent A slow" },
+      { task_id: "w1", task_type: "monitor", description: "watcher", ambient: true },
+    ] }), st);
+    expect(ev).toEqual({ type: "background_tasks", tasks: [{ id: "a1", description: "Agent A slow", taskType: "local_agent" }] });
+    expect([...st.known]).toEqual(["a1"]);
+  });
+
+  it("ignores task events for ids never seen live (an agent's inner Bash)", () => {
+    const st = fresh();
+    expect(translateTaskMessage(sys("task_notification", { task_id: "inner", status: "completed", summary: "Pause for 15 seconds" }), st)).toBeNull();
+    expect(translateTaskMessage(sys("task_progress", { task_id: "inner", last_tool_name: "Bash", usage: {} }), st)).toBeNull();
+  });
+
+  it("maps progress, done (with usage + output file) and attaches task_updated errors", () => {
+    const st = fresh();
+    st.known.add("a1");
+    expect(translateTaskMessage(sys("task_progress", { task_id: "a1", summary: "Listing /tmp entries", last_tool_name: "Bash", usage: { tool_uses: 3 } }), st))
+      .toEqual({ type: "task_progress", id: "a1", summary: "Listing /tmp entries", lastTool: "Bash", toolUses: 3 });
+    expect(translateTaskMessage(sys("task_updated", { task_id: "a1", patch: { status: "failed", error: "vite build exited 1" } }), st)).toBeNull();
+    expect(translateTaskMessage(sys("task_notification", { task_id: "a1", status: "failed", summary: "DONE", output_file: "/tmp/x.output", usage: { tool_uses: 3, duration_ms: 35140 } }), st))
+      .toEqual({ type: "task_done", id: "a1", status: "failed", summary: "DONE", error: "vite build exited 1", toolUses: 3, durationMs: 35140, outputFile: "/tmp/x.output" });
+  });
+
+  it("marks worker_restart notifications as interrupted", () => {
+    const st = fresh();
+    st.known.add("a1");
+    expect(translateTaskMessage(sys("task_notification", { task_id: "a1", status: "stopped", reason: "worker_restart", summary: "" }), st))
+      .toMatchObject({ type: "task_done", id: "a1", status: "interrupted" });
   });
 });

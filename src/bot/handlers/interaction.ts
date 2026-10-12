@@ -5,6 +5,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -14,6 +15,7 @@ import { upsertSession, getProject, getSession, clearSessionId, setBackend } fro
 import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js";
 import { detectCodex } from "../../agent/codex-detect.js";
 import { L } from "../../utils/i18n.js";
+import { formatTaskDetail } from "../../claude/task-board.js";
 
 export async function handleButtonInteraction(
   interaction: ButtonInteraction,
@@ -84,6 +86,30 @@ export async function handleButtonInteraction(
   if (action === "devsync") {
     const { handleDevsyncButton } = await import("./devsync-buttons.js");
     await handleDevsyncButton(interaction);
+    return;
+  }
+
+  // Task board 📄: ephemeral detail for one background task.
+  if (action === "task-out") {
+    const sep = requestId.indexOf(":");
+    const task = sep === -1 ? undefined : sessionManager.getBoardTask(requestId.slice(0, sep), requestId.slice(sep + 1));
+    if (!task) {
+      await interaction.reply({ content: L("That task is no longer available.", "해당 작업을 찾을 수 없습니다."), ephemeral: true });
+      return;
+    }
+    // Shell / Monitor output files are plain text; an agent's output file is
+    // its JSONL transcript, so agents show their summary only.
+    const tail = task.outputFile && task.taskType !== "local_agent" ? readTail(task.outputFile) : undefined;
+    await interaction.reply({ content: formatTaskDetail(task, tail), ephemeral: true });
+    return;
+  }
+
+  // Stop on the Components V2 task board: a V2 message can't take `content`,
+  // so don't rewrite it here — the session's finally block re-renders the
+  // board as "Stopped".
+  if (action === "stop" && interaction.message.flags.has(MessageFlags.IsComponentsV2)) {
+    await interaction.deferUpdate();
+    await sessionManager.stopSession(requestId);
     return;
   }
 
@@ -557,5 +583,23 @@ export async function handleSelectMenuInteraction(
       ],
       components: [row],
     });
+  }
+}
+
+/** Last ~40 lines (≤ 8 KiB) of a possibly huge output file; undefined if unreadable. */
+function readTail(file: string, bytes = 8192): string | undefined {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(bytes, size);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      return buf.toString("utf-8").split("\n").slice(-40).join("\n");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
   }
 }

@@ -157,19 +157,28 @@ describe("SessionManager with MockAgentBackend", () => {
     }
   });
 
-  it("posts the background task name right away, even right after text", async () => {
+  it("posts a task board as soon as a background task starts, and finalizes it", async () => {
     const { sessionManager } = await import("./session-manager.js");
     const channel = makeMockChannel();
     setTimeout(() => {
       testBackend.enqueueEvent({ type: "session_init", sessionId: "sess-1" });
       testBackend.enqueueEvent({ type: "text_delta", text: "Tests started." });
-      testBackend.enqueueEvent({ type: "background_tasks", descriptions: ["Run full test suite"] });
+      testBackend.enqueueEvent({ type: "background_tasks", tasks: [{ id: "b1", description: "Run full test suite", taskType: "local_bash" }] });
+      testBackend.enqueueEvent({ type: "task_done", id: "b1", status: "completed", summary: "1380 passed", durationMs: 250_000 });
+      testBackend.enqueueEvent({ type: "background_tasks", tasks: [] });
       testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
       testBackend.endStream();
     }, 10);
     await sessionManager.sendMessage(channel, "test prompt");
-    const msgs = (channel as unknown as { messages: Array<{ content: string }> }).messages;
-    expect(msgs.some((m) => m.content.includes("🔄 Background: Run full test suite"))).toBe(true);
+    const msgs = (channel as unknown as { messages: Array<{ components?: unknown[]; flags?: number }> }).messages;
+    const boards = msgs.filter((m) => typeof m.flags === "number" && (m.flags & 32768) !== 0);
+    expect(boards).toHaveLength(1); // one board message, edited in place
+    const json = JSON.stringify((boards[0].components ?? []).map((c) => (c as { toJSON(): unknown }).toJSON()));
+    expect(json).toContain("Run full test suite");
+    expect(json).toContain("1380 passed");
+    expect(json).toContain("Done");
+    expect(json).not.toContain("stop:"); // Stop removed once the session is over
+    expect(sessionManager.getBoardTask("ch1", "b1")).toMatchObject({ status: "completed", summary: "1380 passed" });
   });
 
   it("shows approval button for gated tool and forwards decision to backend", async () => {
