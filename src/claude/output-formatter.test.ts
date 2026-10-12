@@ -263,18 +263,16 @@ describe("createResultEmbed", () => {
   // + "Expected values to be equals" (the union validator's other branches
   // also reject). The translator has its own fallback, but this defense
   // guarantees we never reach the crash even if a future caller sends "".
-  it("substitutes non-empty placeholder for empty result string (defense-in-depth)", () => {
-    // The two-line assertion: (1) does not throw, (2) description is non-empty.
+  it("omits description for empty result string instead of throwing", () => {
     expect(() => createResultEmbed("", undefined, 1000, true, false)).not.toThrow();
     const embed = createResultEmbed("", undefined, 1000, true, false);
-    expect(embed.data.description).toBeTruthy();
-    expect(embed.data.description!.length).toBeGreaterThan(0);
+    expect(embed.data.description).toBeUndefined();
   });
 
-  it("substitutes placeholder for empty error result (defense-in-depth)", () => {
+  it("omits description for empty error result instead of throwing", () => {
     expect(() => createResultEmbed("", undefined, 1000, true, true)).not.toThrow();
     const embed = createResultEmbed("", undefined, 1000, true, true);
-    expect(embed.data.description).toBeTruthy();
+    expect(embed.data.description).toBeUndefined();
     expect(embed.data.title).toContain("Task Failed");
   });
 });

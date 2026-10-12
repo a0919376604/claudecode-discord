@@ -89,8 +89,10 @@ export class ClaudeBackend implements AgentBackend {
         },
         canUseTool: async (toolName, input) => {
           // AskUserQuestion → structured question event
+          // tool_start comes from the assistant tool_use block (see
+          // assistantContentToEvents), not from here — canUseTool is skipped
+          // in bypassPermissions mode, and emitting here too would double-count.
           if (toolName === "AskUserQuestion") {
-            this.pushEvent({ type: "tool_start", toolName: "AskUserQuestion", input });
             const requestId = randomUUID();
             const questions = (input as { questions?: unknown }).questions ?? [];
             this.pushEvent({ type: "ask_question_request", requestId, questions: questions as never });
@@ -106,9 +108,6 @@ export class ClaudeBackend implements AgentBackend {
             }
             return { behavior: "allow", updatedInput: { ...input, answers: result.answers } };
           }
-
-          // Progress signal for ALL tools (including read-only)
-          this.pushEvent({ type: "tool_start", toolName, input });
 
           if (READ_ONLY_TOOLS.has(toolName)) {
             return { behavior: "allow", updatedInput: input };

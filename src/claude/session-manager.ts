@@ -54,8 +54,8 @@ const PROGRESS_STALE_MS = Number(process.env.PROGRESS_STALE_MS) > 0
  * Returns the new "tail" Message (callers should treat this as the new
  * currentMessage for any subsequent streaming) and a `remainingBuffer`
  * value that callers in the throttle path should assign back to their
- * local buffer to preserve the existing cumulative-buffer behavior
- * (single-chunk: buffer preserved; multi-chunk overflow: buffer drained).
+ * local buffer: whatever text `tail` currently shows (single-chunk: the
+ * whole buffer; multi-chunk overflow: the last chunk).
  *
  * Empty buffer is a zero-API-call no-op.
  *
@@ -79,14 +79,13 @@ export async function flushStreamBuffer(
       content: chunks[0] || "...",
       components: [],
     });
-    // Send overflow chunks as new messages. We track remainingBuffer the
-    // way the original throttle path did: after each send, drop the
-    // already-sent prefix so a future edit of `tail` (the new
-    // currentMessage) won't re-render text the user has already seen.
+    // Send overflow chunks as new messages.
     for (let i = 1; i < chunks.length; i++) {
       tail = await channel.send(chunks[i]);
-      remainingBuffer = chunks.slice(i + 1).join("");
     }
+    // tail now shows the last chunk; keep it in the buffer so the next edit
+    // of tail appends to it instead of overwriting it.
+    if (chunks.length > 1) remainingBuffer = chunks[chunks.length - 1];
   } catch (e) {
     console.warn(
       `[flush] Failed to edit ${currentMessage.id ?? "(unknown id)"}, sending new:`,
@@ -185,6 +184,22 @@ class SessionManager {
     // The `as` cast widens the inferred type past the literal `null` so TS
     // doesn't treat later assignments inside async closures as `never`.
     let progressMessage = null as Message | null;
+
+    /**
+     * Push responseBuffer to Discord. If the current message was finalized
+     * (an approval / question / progress message now sits below it), start a
+     * fresh message instead of editing text the user already scrolled past.
+     */
+    const flushText = async () => {
+      if (responseBuffer.length === 0) return;
+      if (bufferFinalized) {
+        currentMessage = await channel.send("...");
+        bufferFinalized = false;
+      }
+      const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
+      currentMessage = tail;
+      responseBuffer = remainingBuffer;
+    };
 
     /**
      * Single entry point for "show the user we're still working." Dispatches
@@ -333,20 +348,27 @@ class SessionManager {
               }
 
               case "text_delta": {
-                responseBuffer += event.text;
+                if (progressMessage) {
+                  // Text resumed after a silent phase. Drop the progress
+                  // placeholder (and its Stop button) and continue in a new
+                  // message below it — otherwise every silent phase leaves an
+                  // orphaned "Thinking… [Stop]" and new text gets appended to
+                  // the old message above them.
+                  await flushText();
+                  progressMessage.delete().catch(() => {});
+                  progressMessage = null;
+                  responseBuffer = "";
+                  bufferFinalized = true;
+                }
+                // Each event is a whole assistant text block; keep blocks from
+                // separate turns from gluing together ("...file.Done").
+                responseBuffer += responseBuffer.length > 0 ? `\n\n${event.text}` : event.text;
                 hasTextOutput = true;
                 const now = Date.now();
                 if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
                   lastEditTime = now;
                   lastTextTime = now;
-                  progressMessage = null;
-                  if (bufferFinalized) {
-                    currentMessage = await channel.send("...");
-                    bufferFinalized = false;
-                  }
-                  const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
-                  responseBuffer = remainingBuffer;
+                  await flushText();
                 }
                 break;
               }
@@ -375,8 +397,7 @@ class SessionManager {
               case "tool_approval_request": {
                 // Flush buffered text so user sees Claude's explanation before the button
                 if (responseBuffer.length > 0) {
-                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
+                  await flushText();
                   responseBuffer = "";
                   bufferFinalized = true;
                   lastEditTime = Date.now();
@@ -414,8 +435,7 @@ class SessionManager {
 
               case "ask_question_request": {
                 if (responseBuffer.length > 0) {
-                  const { tail } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
-                  currentMessage = tail;
+                  await flushText();
                   responseBuffer = "";
                   bufferFinalized = true;
                   lastEditTime = Date.now();
@@ -467,10 +487,8 @@ class SessionManager {
                 const isError = event.isError;
                 const resultText = event.text;
                 if (responseBuffer.length > 0) {
-                  const chunks = splitMessage(responseBuffer);
                   try {
-                    await currentMessage.edit(chunks[0] || L("Done.", "완료."));
-                    for (let i = 1; i < chunks.length; i++) await channel.send(chunks[i]);
+                    await flushText();
                   } catch (e) {
                     console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
                   }
@@ -480,8 +498,10 @@ class SessionManager {
                 } catch (e) {
                   console.warn(`[complete] Failed to update completed button for ${channelId}:`, e instanceof Error ? e.message : e);
                 }
+                // Text already streamed as plain messages (copyable on mobile);
+                // don't repeat it inside the embed. Errors aren't streamed.
                 const resultEmbed = createResultEmbed(
-                  resultText,
+                  hasTextOutput && !isError ? "" : resultText,
                   event.costUsd,
                   Date.now() - startTime,
                   getConfig().SHOW_COST,

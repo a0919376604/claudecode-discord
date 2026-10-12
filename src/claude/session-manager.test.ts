@@ -215,8 +215,9 @@ describe("flushStreamBuffer", () => {
     expect(send).toHaveBeenCalled();
     // tail is the LAST sent message, not the original currentMessage.
     expect(result.tail).toBe(sent[sent.length - 1]);
-    // Multi-chunk overflow: buffer drains (preserves existing pattern).
-    expect(result.remainingBuffer).toBe("");
+    // Multi-chunk overflow: buffer = what tail shows, so the next edit of
+    // tail appends instead of wiping the last chunk.
+    expect(result.remainingBuffer).toBe("a".repeat(5000 - 2 * 1900));
   });
 
   it("falls back to channel.send when edit throws", async () => {

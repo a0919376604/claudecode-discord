@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sdkMessageToEvent } from "./claude-translate.js";
+import { sdkMessageToEvent, assistantContentToEvents } from "./claude-translate.js";
 
 describe("sdkMessageToEvent", () => {
   it("translates system init to session_init", () => {
@@ -23,6 +23,29 @@ describe("sdkMessageToEvent", () => {
     // So test the single-block case:
     const single = { type: "assistant", content: [{ type: "text", text: "hi" }] };
     expect(sdkMessageToEvent(single)).toEqual({ type: "text_delta", text: "hi" });
+  });
+
+  it("reads text from the real SDK shape (message.content)", () => {
+    const real = {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "hi" },
+          { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+          { type: "thinking", thinking: "…" },
+          { type: "text", text: "yo" },
+        ],
+      },
+      parent_tool_use_id: null,
+      session_id: "s",
+    };
+    expect(sdkMessageToEvent(real)).toEqual({ type: "text_delta", text: "hi" });
+    // tool_use → tool_start: the only tool signal in bypassPermissions mode.
+    expect(assistantContentToEvents(real)).toEqual([
+      { type: "text_delta", text: "hi" },
+      { type: "tool_start", toolName: "Bash", input: { command: "ls" } },
+      { type: "text_delta", text: "yo" },
+    ]);
   });
 
   it("translates result success", () => {

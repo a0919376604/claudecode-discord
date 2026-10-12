@@ -66,7 +66,8 @@ function makeMockChannel() {
       content,
       ...extras,
     };
-    msg.edit = vi.fn(async (patch: unknown) => Object.assign(msg, patch));
+    msg.edit = vi.fn(async (patch: unknown) => Object.assign(msg, typeof patch === "string" ? { content: patch } : patch));
+    msg.delete = vi.fn(async () => {});
     messages.push(msg as { id: string; content: string; embeds?: unknown[]; components?: unknown[] });
     return msg;
   };
@@ -123,6 +124,37 @@ describe("SessionManager with MockAgentBackend", () => {
       prompt: "test prompt",
       channelId: "ch1",
     });
+  });
+
+  it("replaces the progress message when text resumes instead of stacking Stop buttons", async () => {
+    vi.useFakeTimers();
+    try {
+      const { sessionManager } = await import("./session-manager.js");
+      const channel = makeMockChannel();
+      testBackend.enqueueEvent({ type: "session_init", sessionId: "sess-1" });
+      testBackend.enqueueEvent({ type: "text_delta", text: "first" });
+      const done = sessionManager.sendMessage(channel, "test prompt");
+
+      // Silent > 30s stale threshold → heartbeat posts a "⏳ … [Stop]" message.
+      await vi.advanceTimersByTimeAsync(46_000);
+      const msgs = (channel as unknown as { messages: Array<Record<string, unknown>> }).messages;
+      const progress = msgs.find((m, i) => i > 0 && String(m.content).startsWith("⏳"));
+      expect(progress).toBeDefined();
+
+      testBackend.enqueueEvent({ type: "text_delta", text: "second" });
+      testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
+      testBackend.endStream();
+      await vi.advanceTimersByTimeAsync(10);
+      await done;
+
+      expect(progress!.delete).toHaveBeenCalled();
+      // Old text untouched; new text lands in a message created after the progress one.
+      expect(msgs[0].content).toBe("first");
+      const secondIdx = msgs.findIndex((m) => m.content === "second");
+      expect(secondIdx).toBeGreaterThan(msgs.indexOf(progress!));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows approval button for gated tool and forwards decision to backend", async () => {

@@ -22,7 +22,7 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
   }
 
   if (m.type === "assistant") {
-    const content = (m as { content?: unknown }).content;
+    const content = assistantContent(m);
     if (!Array.isArray(content) || content.length === 0) return null;
     const first = content[0];
     if (first && typeof first === "object" && "text" in first && typeof (first as { text: unknown }).text === "string") {
@@ -60,18 +60,33 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
 }
 
 /**
- * Convenience: yields one text_delta per text block in an assistant
- * message. Non-text blocks are skipped silently.
+ * Yields one text_delta per text block and one tool_start per tool_use block
+ * in an assistant message. tool_use blocks are the only tool signal that
+ * fires in bypassPermissions mode (canUseTool is never called there), so the
+ * progress line can show which tool is running.
  */
 export function assistantContentToEvents(msg: unknown): NormalizedEvent[] {
   if (!msg || typeof msg !== "object" || (msg as { type?: string }).type !== "assistant") return [];
-  const content = (msg as { content?: unknown }).content;
+  const content = assistantContent(msg);
   if (!Array.isArray(content)) return [];
   const out: NormalizedEvent[] = [];
   for (const block of content) {
-    if (block && typeof block === "object" && "text" in block && typeof (block as { text: unknown }).text === "string") {
-      out.push({ type: "text_delta", text: (block as { text: string }).text });
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: string; text?: unknown; name?: unknown; input?: unknown };
+    if (typeof b.text === "string") {
+      out.push({ type: "text_delta", text: b.text });
+    } else if (b.type === "tool_use" && typeof b.name === "string") {
+      const input = b.input && typeof b.input === "object" ? (b.input as Record<string, unknown>) : {};
+      out.push({ type: "tool_start", toolName: b.name, input });
     }
   }
   return out;
+}
+
+// Real SDKAssistantMessage nests blocks under `message.content` (BetaMessage).
+// Reading top-level `content` only matched hand-written test fixtures, so no
+// text_delta ever fired and replies only showed up inside the result embed.
+function assistantContent(msg: object): unknown {
+  return (msg as { message?: { content?: unknown } }).message?.content
+    ?? (msg as { content?: unknown }).content;
 }
