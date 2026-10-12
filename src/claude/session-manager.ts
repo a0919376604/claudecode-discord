@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { EffortLevel } from "../agent/backend.js";
-import type { Message, TextChannel } from "discord.js";
+import { MessageFlags, type Message, type TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -27,6 +27,7 @@ import {
   buildProgressContent,
 } from "./progress-decision.js";
 import { drainOldest } from "../wakeup/queue.js";
+import { TaskBoard, renderBoard, type BoardTask } from "./task-board.js";
 import { WakeupPayloadSchema } from "../wakeup/types.js";
 import type { AgentBackend } from "../agent/backend.js";
 import { getBackend } from "../agent/backend-factory.js";
@@ -44,6 +45,17 @@ import { getBackend } from "../agent/backend-factory.js";
 const PROGRESS_STALE_MS = Number(process.env.PROGRESS_STALE_MS) > 0
   ? Number(process.env.PROGRESS_STALE_MS)
   : 30_000;
+
+/**
+ * B+ notification tiers: only "needs you" (approval / question) and the end
+ * of a long task @mention the user. Every other new message the bot posts
+ * during a session is sent silently (unread marker, no push).
+ */
+const SILENT = MessageFlags.SuppressNotifications;
+/** Tasks taking longer than this @mention the user when they finish. */
+const LONG_TASK_MS = 2 * 60 * 1000;
+/** Latest task board per channel, so 📄 buttons keep working after the session ends. */
+const lastBoards = new Map<string, TaskBoard>();
 
 /**
  * Finalize `buffer` to Discord. Used by:
@@ -81,7 +93,7 @@ export async function flushStreamBuffer(
     });
     // Send overflow chunks as new messages.
     for (let i = 1; i < chunks.length; i++) {
-      tail = await channel.send(chunks[i]);
+      tail = await channel.send({ content: chunks[i], flags: SILENT });
     }
     // tail now shows the last chunk; keep it in the buffer so the next edit
     // of tail appends to it instead of overwriting it.
@@ -94,6 +106,7 @@ export async function flushStreamBuffer(
     tail = await channel.send({
       content: chunks[chunks.length - 1] || "...",
       components: [],
+      flags: SILENT,
     });
   }
 
@@ -137,8 +150,13 @@ class SessionManager {
   async sendMessage(
     channel: TextChannel,
     prompt: string,
+    userId?: string,
   ): Promise<void> {
     const channelId = channel.id;
+    // Who to @mention for "needs you" / long-task-done. Wakeups and plugin
+    // bridges have no author — fall back to the first allowed user.
+    const mentionId = userId ?? getConfig().ALLOWED_USER_IDS?.[0];
+    const ping = mentionId ? `<@${mentionId}>` : undefined;
 
     const project = getProject(channelId);
     if (!project) return;
@@ -159,6 +177,7 @@ class SessionManager {
     let currentMessage: Message = await channel.send({
       content: L("⏳ Thinking...", "⏳ 생각 중..."),
       components: [stopRow],
+      flags: SILENT,
     });
     const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
     // After a tool flush finalizes currentMessage, the next streamed
@@ -170,7 +189,12 @@ class SessionManager {
     const startTime = Date.now();
     let lastActivity = L("Thinking...", "생각 중...");
     let toolUseCount = 0;
-    let backgroundTasks: string[] = [];
+    let board: TaskBoard | null = null;
+    let boardMessage: Message | null = null;
+    let boardTimer: NodeJS.Timeout | null = null;
+    let lastBoardRender = 0;
+    let boardChain: Promise<void> = Promise.resolve();
+    let resultIsError = false;
     let hasTextOutput = false;
     let hasResult = false;
     let model: string | undefined;
@@ -194,7 +218,7 @@ class SessionManager {
     const flushText = async () => {
       if (responseBuffer.length === 0) return;
       if (bufferFinalized) {
-        currentMessage = await channel.send("...");
+        currentMessage = await channel.send({ content: "...", flags: SILENT });
         bufferFinalized = false;
       }
       const { tail, remainingBuffer } = await flushStreamBuffer(channel, currentMessage, responseBuffer);
@@ -208,12 +232,45 @@ class SessionManager {
      * progress message (post-text, when streaming has been silent for a
      * while). See progress-decision.ts for the rationale.
      */
-    const surfaceProgress = async (force = false) => {
+    /**
+     * Render the task board. Serialized through boardChain so a slow first
+     * send can't race a second render into posting two boards.
+     */
+    const renderBoardNow = (phase: "running" | "done" | "stopped" | "failed" = "running", showStop = true): Promise<void> => {
+      boardChain = boardChain.then(async () => {
+        if (!board) return;
+        const container = renderBoard(board, { now: Date.now(), toolUseCount, phase, showStop, activity: lastActivity });
+        try {
+          if (boardMessage) await boardMessage.edit({ components: [container] });
+          else boardMessage = await channel.send({ components: [container], flags: MessageFlags.IsComponentsV2 | SILENT });
+          lastBoardRender = Date.now();
+        } catch (e) {
+          console.warn(`[board] render failed for ${channelId}:`, unwrapErrorMessage(e));
+        }
+      });
+      return boardChain;
+    };
+    /** Coalesce bursts of task events into one edit per EDIT_INTERVAL. */
+    const scheduleBoard = () => {
+      if (!board || boardTimer) return;
+      const wait = Math.max(0, EDIT_INTERVAL - (Date.now() - lastBoardRender));
+      boardTimer = setTimeout(() => {
+        boardTimer = null;
+        void renderBoardNow();
+      }, wait);
+    };
+
+    const surfaceProgress = async () => {
+      // With background tasks the board is the progress display (its header
+      // carries the activity and tool count; elapsed time is a <t:…:R>).
+      if (board) {
+        scheduleBoard();
+        return;
+      }
       const content = buildProgressContent(
         lastActivity,
         Date.now() - startTime,
         toolUseCount,
-        backgroundTasks,
       );
       const action = decideProgressAction({
         hasTextOutput,
@@ -226,11 +283,6 @@ class SessionManager {
       try {
         switch (action) {
           case "skip":
-            // Recent text normally suppresses progress, but a background
-            // task starting is news the user should see right away.
-            if (!force) return;
-            if (progressMessage) await progressMessage.edit({ content, components: [stopRow] });
-            else progressMessage = await channel.send({ content, components: [stopRow] });
             return;
           case "edit-current":
             await currentMessage.edit({ content, components: [stopRow] });
@@ -241,7 +293,7 @@ class SessionManager {
             }
             return;
           case "send-progress":
-            progressMessage = await channel.send({ content, components: [stopRow] });
+            progressMessage = await channel.send({ content, components: [stopRow], flags: SILENT });
             return;
         }
       } catch (e) {
@@ -418,8 +470,15 @@ class SessionManager {
                 // Discord button
                 const { embed, row } = createToolApprovalEmbed(event.toolName, event.input, event.requestId);
                 updateSessionStatus(channelId, "waiting");
-                await channel.send({ embeds: [embed], components: [row] });
+                const approvalMsg = await channel.send({ content: ping, embeds: [embed], components: [row] });
+                board?.setNeedsYou(event.requestId, L(`Approve ${event.toolName}?`, `${event.toolName} 승인 필요`), approvalMsg.url);
+                scheduleBoard();
+                const clearNeed = () => {
+                  board?.clearNeedsYou(event.requestId);
+                  scheduleBoard();
+                };
                 const timeout = setTimeout(() => {
+                  clearNeed();
                   pendingApprovals.delete(event.requestId);
                   updateSessionStatus(channelId, "online");
                   backend.respondToApproval(event.requestId, "deny", "Approval timed out");
@@ -427,6 +486,7 @@ class SessionManager {
                 pendingApprovals.set(event.requestId, {
                   resolve: (decision) => {
                     clearTimeout(timeout);
+                    clearNeed();
                     pendingApprovals.delete(event.requestId);
                     updateSessionStatus(channelId, "online");
                     backend.respondToApproval(
@@ -454,7 +514,9 @@ class SessionManager {
                   const qRequestId = randomUUID();
                   const { embed, components } = createAskUserQuestionEmbed(q, qRequestId, qi, event.questions.length);
                   updateSessionStatus(channelId, "waiting");
-                  await channel.send({ embeds: [embed], components });
+                  const questionMsg = await channel.send({ content: ping, embeds: [embed], components });
+                  board?.setNeedsYou(qRequestId, L(`Waiting for your answer: ${q.question}`, `답변 대기: ${q.question}`), questionMsg.url);
+                  void renderBoardNow();
                   const answer = await new Promise<string | null>((resolve) => {
                     const t = setTimeout(() => {
                       pendingQuestions.delete(qRequestId);
@@ -467,6 +529,8 @@ class SessionManager {
                       channelId,
                     });
                   });
+                  board?.clearNeedsYou(qRequestId);
+                  scheduleBoard();
                   if (answer === null) {
                     timedOut = true;
                     break;   // exit the question-collection for-loop
@@ -487,11 +551,29 @@ class SessionManager {
               }
 
               case "background_tasks": {
-                const started = event.descriptions.some((d) => !backgroundTasks.includes(d));
-                backgroundTasks = event.descriptions;
-                await surfaceProgress(started);
+                if (event.tasks.length > 0 && !board) {
+                  board = new TaskBoard(channelId, startTime);
+                  lastBoards.set(channelId, board);
+                }
+                if (!board) break;
+                const isNew = event.tasks.some((t) => !board!.get(t.id));
+                board.syncLive(event.tasks, Date.now());
+                // A task starting is news — post/refresh right away; other
+                // changes coalesce.
+                if (isNew) void renderBoardNow();
+                else scheduleBoard();
                 break;
               }
+
+              case "task_progress":
+                board?.progress(event.id, event);
+                scheduleBoard();
+                break;
+
+              case "task_done":
+                board?.done(event.id, event, Date.now());
+                scheduleBoard();
+                break;
 
               case "tool_end":
                 // Optional signal — no-op for now (heartbeat already covers)
@@ -522,7 +604,9 @@ class SessionManager {
                   isError,
                   model,
                 );
+                resultIsError = isError;
                 await channel.send({
+                  content: Date.now() - startTime > LONG_TASK_MS ? ping : undefined,
                   embeds: [resultEmbed],
                   components: [createFinishFeatureButton(channelId)],
                 });
@@ -592,7 +676,9 @@ class SessionManager {
         getConfig().SHOW_COST,
         true,
       );
+      resultIsError = true;
       await channel.send({
+        content: Date.now() - startTime > LONG_TASK_MS ? ping : undefined,
         embeds: [resultEmbed],
         components: [createFinishFeatureButton(channelId)],
       });
@@ -616,6 +702,15 @@ class SessionManager {
       // Claude was doing during the silent phase.
       if (progressMessage) {
         progressMessage.edit({ components: [] }).catch(() => {});
+      }
+
+      // Final board state: no Stop button; whatever was still running died
+      // with the session.
+      if (board) {
+        if (boardTimer) clearTimeout(boardTimer);
+        boardTimer = null;
+        board.finalize(Date.now());
+        await renderBoardNow(!hasResult ? "stopped" : resultIsError ? "failed" : "done", false);
       }
 
       // Clean up any pending approvals/questions for this channel
@@ -753,6 +848,11 @@ class SessionManager {
 
   isActive(channelId: string): boolean {
     return this.sessions.has(channelId);
+  }
+
+  /** Task from the channel's latest board (for the 📄 button). */
+  getBoardTask(channelId: string, taskId: string): BoardTask | undefined {
+    return lastBoards.get(channelId)?.get(taskId);
   }
 
   resolveApproval(

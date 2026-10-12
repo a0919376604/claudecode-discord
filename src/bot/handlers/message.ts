@@ -159,6 +159,6 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  // Send message to Claude session
-  await sessionManager.sendMessage(channel, prompt);
+  // Send message to Claude session (author id → @mention when it needs you / finishes a long task)
+  await sessionManager.sendMessage(channel, prompt, message.author.id);
 }

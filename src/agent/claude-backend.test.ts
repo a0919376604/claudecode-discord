@@ -381,9 +381,9 @@ describe("ClaudeBackend", () => {
     await consume;
     expect(events.map((e) => e.type === "result" ? `result:${e.text}` : e.type === "text_delta" ? e.text : e.type))
       .toEqual(["background_tasks", "started", "background_tasks", "finished", "result:finished"]);
-    expect(events[0]).toEqual({ type: "background_tasks", descriptions: ["tests"] });
+    expect(events[0]).toEqual({ type: "background_tasks", tasks: [{ id: "b1", description: "tests", taskType: "local_bash" }] });
     // Ambient-only set reports as empty.
-    expect(events[2]).toEqual({ type: "background_tasks", descriptions: [] });
+    expect(events[2]).toEqual({ type: "background_tasks", tasks: [] });
   });
 
   it("still delivers a held result if the stream ends while tasks are live", async () => {

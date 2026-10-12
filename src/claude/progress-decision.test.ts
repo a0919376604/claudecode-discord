@@ -146,16 +146,4 @@ describe("buildProgressContent", () => {
       buildProgressContent("Searching code", 65 * 60_000, 142),
     ).toBe("⏳ Searching code (1h 5m) [142 tools used]");
   });
-
-  it("lists running background tasks, capped at 3 and truncated", () => {
-    const long = "x".repeat(100);
-    const out = buildProgressContent("Running command", 5_000, 1, ["Run full test suite", long, "c", "d"]);
-    expect(out).toBe(
-      "⏳ Running command (5s) [1 tools used]" +
-      "\n🔄 Background: Run full test suite" +
-      `\n🔄 Background: ${"x".repeat(79)}…` +
-      "\n🔄 Background: c" +
-      "\n🔄 +1 more",
-    );
-  });
 });
