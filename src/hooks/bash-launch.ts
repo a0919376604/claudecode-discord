@@ -30,8 +30,16 @@ export function extractCodexSlot(command: string): string | null {
 
   const m = command.match(CODEX_LAUNCH_LOG_RE);
   if (!m) return null;
-  return m[1];
+  const slot = m[1];
+  if (slot !== "$SLOT" && slot !== "${SLOT}") return slot;
+  // The canonical Step-3 launch writes `/tmp/run-plan-codex-$SLOT.log` —
+  // resolve the variable from `SLOT=...` in the same command. Recording the
+  // literal "$SLOT" made the PID poller silently drop every canonical launch.
+  return command.match(SLOT_ASSIGN_RE)?.[1] ?? null;
 }
+
+/** `SLOT="R-1_"`, `SLOT='R-1_'`, `SLOT=R-1_` at a word boundary. */
+const SLOT_ASSIGN_RE = /(?:^|[\s;&])SLOT=["']?([^"'\s;&]+)["']?/;
 
 interface BashInput {
   command?: unknown;
