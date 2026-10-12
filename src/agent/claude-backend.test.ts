@@ -377,7 +377,7 @@ describe("ClaudeBackend", () => {
     sdkController.push({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w", task_type: "monitor", description: "w", ambient: true }] });
     sdkController.push(text("finished"));
     sdkController.push({ type: "result", subtype: "success", result: "finished" });
-    sdkController.push(text("never read"));
+    sdkController.end();
     await consume;
     expect(events.map((e) => e.type === "result" ? `result:${e.text}` : e.type === "text_delta" ? e.text : e.type))
       .toEqual(["background_tasks", "started", "background_tasks", "finished", "result:finished"]);
@@ -398,5 +398,32 @@ describe("ClaudeBackend", () => {
     sdkController.end();
     await consume;
     expect(events.filter((e) => e.type === "result")).toHaveLength(1);
+  });
+
+  // Regression (verified against SDK 0.3.293, 2026-10-12): resuming a session
+  // that has a pending task-notification (e.g. a background watcher killed when
+  // the previous run closed) makes the CLI run that notification as its own
+  // turn first: result="" num_turns=0. The real prompt's turn follows with its
+  // own result. Returning on the first result swallowed the wakeup prompt — the
+  // user saw an empty "Task completed" and the CLI logged "No response requested."
+  it("reads until the stream ends and delivers only the final result", async () => {
+    const backend = new ClaudeBackend();
+    const events: NormalizedEvent[] = [];
+    const consume = (async () => {
+      for await (const ev of backend.start(makeStartOpts())) events.push(ev);
+    })();
+    await new Promise((r) => setTimeout(r, 0));
+    sdkController.push({ type: "system", subtype: "task_notification", task_id: "b1", status: "stopped" });
+    sdkController.push({ type: "system", subtype: "init", session_id: "s1" });
+    sdkController.push({ type: "result", subtype: "success", result: "", num_turns: 0 });
+    sdkController.push({ type: "system", subtype: "init", session_id: "s1" });
+    sdkController.push({ type: "assistant", message: { content: [{ type: "text", text: "PONG" }] } });
+    sdkController.push({ type: "result", subtype: "success", result: "PONG", num_turns: 1 });
+    sdkController.end();
+    await consume;
+    const results = events.filter((e) => e.type === "result");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ type: "result", text: "PONG" });
+    expect(events.some((e) => e.type === "text_delta" && e.text === "PONG")).toBe(true);
   });
 });
