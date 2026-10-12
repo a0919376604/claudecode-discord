@@ -6,6 +6,8 @@ export type NormalizedEvent =
   | { type: "text_delta"; text: string; isReasoning?: boolean }
   | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
   | { type: "tool_end"; toolName: string; ok: boolean }
+  // Full set of live background tasks (REPLACE semantics), by description.
+  | { type: "background_tasks"; descriptions: string[] }
   | { type: "result"; text: string; costUsd?: number; isError: boolean }
   | { type: "tool_approval_request"; requestId: string; toolName: string; input: Record<string, unknown> }
   // AskUserQuestion — only Claude backend emits this. Codex has no

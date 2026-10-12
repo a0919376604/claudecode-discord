@@ -157,6 +157,21 @@ describe("SessionManager with MockAgentBackend", () => {
     }
   });
 
+  it("posts the background task name right away, even right after text", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    const channel = makeMockChannel();
+    setTimeout(() => {
+      testBackend.enqueueEvent({ type: "session_init", sessionId: "sess-1" });
+      testBackend.enqueueEvent({ type: "text_delta", text: "Tests started." });
+      testBackend.enqueueEvent({ type: "background_tasks", descriptions: ["Run full test suite"] });
+      testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
+      testBackend.endStream();
+    }, 10);
+    await sessionManager.sendMessage(channel, "test prompt");
+    const msgs = (channel as unknown as { messages: Array<{ content: string }> }).messages;
+    expect(msgs.some((m) => m.content.includes("🔄 Background: Run full test suite"))).toBe(true);
+  });
+
   it("shows approval button for gated tool and forwards decision to backend", async () => {
     const { sessionManager } = await import("./session-manager.js");
     const channel = makeMockChannel();

@@ -357,4 +357,46 @@ describe("ClaudeBackend", () => {
     expect(canUseToolResult!.behavior).toBe("deny");
     expect(canUseToolResult!.message).toBe("Interrupted");
   });
+
+  // Regression: "the full test run was interrupted when the session ended".
+  // Verified against the real SDK: with a background task live, the first
+  // result is followed by task_notification → another turn → second result.
+  // Returning on the first result closed the query and killed the task.
+  it("keeps consuming past a result while background tasks are live", async () => {
+    const backend = new ClaudeBackend();
+    const events: NormalizedEvent[] = [];
+    const consume = (async () => {
+      for await (const ev of backend.start(makeStartOpts())) events.push(ev);
+    })();
+    await new Promise((r) => setTimeout(r, 0));
+    const text = (t: string) => ({ type: "assistant", message: { content: [{ type: "text", text: t }] } });
+    sdkController.push({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1", task_type: "local_bash", description: "tests" }] });
+    sdkController.push(text("started"));
+    sdkController.push({ type: "result", subtype: "success", result: "started" });
+    // Ambient tasks (watchers) don't hold the turn open.
+    sdkController.push({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "w", task_type: "monitor", description: "w", ambient: true }] });
+    sdkController.push(text("finished"));
+    sdkController.push({ type: "result", subtype: "success", result: "finished" });
+    sdkController.push(text("never read"));
+    await consume;
+    expect(events.map((e) => e.type === "result" ? `result:${e.text}` : e.type === "text_delta" ? e.text : e.type))
+      .toEqual(["background_tasks", "started", "background_tasks", "finished", "result:finished"]);
+    expect(events[0]).toEqual({ type: "background_tasks", descriptions: ["tests"] });
+    // Ambient-only set reports as empty.
+    expect(events[2]).toEqual({ type: "background_tasks", descriptions: [] });
+  });
+
+  it("still delivers a held result if the stream ends while tasks are live", async () => {
+    const backend = new ClaudeBackend();
+    const events: NormalizedEvent[] = [];
+    const consume = (async () => {
+      for await (const ev of backend.start(makeStartOpts())) events.push(ev);
+    })();
+    await new Promise((r) => setTimeout(r, 0));
+    sdkController.push({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1", task_type: "local_bash", description: "x" }] });
+    sdkController.push({ type: "result", subtype: "success", result: "started" });
+    sdkController.end();
+    await consume;
+    expect(events.filter((e) => e.type === "result")).toHaveLength(1);
+  });
 });
