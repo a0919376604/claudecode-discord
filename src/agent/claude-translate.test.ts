@@ -28,13 +28,22 @@ describe("sdkMessageToEvent", () => {
   it("reads text from the real SDK shape (message.content)", () => {
     const real = {
       type: "assistant",
-      message: { content: [{ type: "text", text: "hi" }, { type: "tool_use" }, { type: "text", text: "yo" }] },
+      message: {
+        content: [
+          { type: "text", text: "hi" },
+          { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+          { type: "thinking", thinking: "…" },
+          { type: "text", text: "yo" },
+        ],
+      },
       parent_tool_use_id: null,
       session_id: "s",
     };
     expect(sdkMessageToEvent(real)).toEqual({ type: "text_delta", text: "hi" });
+    // tool_use → tool_start: the only tool signal in bypassPermissions mode.
     expect(assistantContentToEvents(real)).toEqual([
       { type: "text_delta", text: "hi" },
+      { type: "tool_start", toolName: "Bash", input: { command: "ls" } },
       { type: "text_delta", text: "yo" },
     ]);
   });

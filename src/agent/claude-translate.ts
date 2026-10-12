@@ -60,8 +60,10 @@ export function sdkMessageToEvent(msg: unknown): NormalizedEvent | null {
 }
 
 /**
- * Convenience: yields one text_delta per text block in an assistant
- * message. Non-text blocks are skipped silently.
+ * Yields one text_delta per text block and one tool_start per tool_use block
+ * in an assistant message. tool_use blocks are the only tool signal that
+ * fires in bypassPermissions mode (canUseTool is never called there), so the
+ * progress line can show which tool is running.
  */
 export function assistantContentToEvents(msg: unknown): NormalizedEvent[] {
   if (!msg || typeof msg !== "object" || (msg as { type?: string }).type !== "assistant") return [];
@@ -69,8 +71,13 @@ export function assistantContentToEvents(msg: unknown): NormalizedEvent[] {
   if (!Array.isArray(content)) return [];
   const out: NormalizedEvent[] = [];
   for (const block of content) {
-    if (block && typeof block === "object" && "text" in block && typeof (block as { text: unknown }).text === "string") {
-      out.push({ type: "text_delta", text: (block as { text: string }).text });
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: string; text?: unknown; name?: unknown; input?: unknown };
+    if (typeof b.text === "string") {
+      out.push({ type: "text_delta", text: b.text });
+    } else if (b.type === "tool_use" && typeof b.name === "string") {
+      const input = b.input && typeof b.input === "object" ? (b.input as Record<string, unknown>) : {};
+      out.push({ type: "tool_start", toolName: b.name, input });
     }
   }
   return out;
