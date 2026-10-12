@@ -23,6 +23,26 @@ describe("extractCodexSlot", () => {
     expect(extractCodexSlot(cmd)).toBe("R-184-impl-plan");
   });
 
+  // Regression (2026-10-12): SKILL.md Step 3 writes the path with an
+  // unexpanded variable. The hook used to record the slot as the literal
+  // "$SLOT", so the PID poller looked for /tmp/run-plan-codex-$SLOT.pid,
+  // found nothing and silently dropped the slot — the "codex died without a
+  // done file" safety net never fired for the canonical launch.
+  it("resolves $SLOT / ${SLOT} from the SLOT= assignment in the same command", () => {
+    const step3 = `SLOT="R-234-insights-main-tree-plan_"
+LOG_FILE=/tmp/run-plan-codex-$SLOT.log
+PID_FILE=/tmp/run-plan-codex-$SLOT.pid
+nohup codex exec - --dangerously-bypass-approvals-and-sandbox < "$PROMPT_FILE" > "$LOG_FILE" 2>&1 &`;
+    expect(extractCodexSlot(step3)).toBe("R-234-insights-main-tree-plan_");
+    const braced = "SLOT=R-180.3-slice-c_; nohup codex exec - > /tmp/run-plan-codex-${SLOT}.log 2>&1 &";
+    expect(extractCodexSlot(braced)).toBe("R-180.3-slice-c_");
+  });
+
+  it("returns null for an unexpanded $SLOT with no assignment in the command", () => {
+    const cmd = 'nohup codex exec - > "/tmp/run-plan-codex-$SLOT.log" 2>&1 &';
+    expect(extractCodexSlot(cmd)).toBeNull();
+  });
+
   it("matches Claude's ad-hoc retry pattern with numeric run suffix", () => {
     const cmd = "nohup codex exec - < /tmp/prompt.txt > /tmp/run-plan-codex-R-184-impl-plan.log.run4 2>&1 &";
     expect(extractCodexSlot(cmd)).toBe("R-184-impl-plan");
