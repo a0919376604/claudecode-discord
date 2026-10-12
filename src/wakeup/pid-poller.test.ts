@@ -41,6 +41,31 @@ describe("pid-poller pollOnce", () => {
     expect(processed).toHaveLength(0);
   });
 
+  // Regression (2026-10-12): the default dispatch was enqueueWakeup(), which
+  // only drains when a session in that channel ENDS. An idle channel (the
+  // normal case once Claude's turn is over) never woke up — the detection
+  // sat in the DB until the user typed something.
+  it("by default drops a wakeup file so the watcher wakes an idle channel", async () => {
+    const wakeupDir = path.join(tmp, "wakeups");
+    fs.mkdirSync(wakeupDir);
+    fs.writeFileSync(path.join(tmp, "run-plan-codex-dead.pid"), "999999999");
+    pollOnce({
+      tmpDir: tmp,
+      wakeupDir,
+      listSlots: () => [makeSlot("dead", 120_000)],
+      onSlotProcessed: (s) => processed.push(s),
+    });
+    let files: string[] = [];
+    for (let i = 0; i < 50 && files.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      files = fs.readdirSync(wakeupDir).filter((f) => f.endsWith(".json"));
+    }
+    expect(files).toHaveLength(1);
+    const payload = JSON.parse(fs.readFileSync(path.join(wakeupDir, files[0]), "utf-8"));
+    expect(payload).toMatchObject({ channel_id: "1505079292487274537", source: "run-plan-poller" });
+    expect(processed).toEqual(["dead"]);
+  });
+
   it("fires wakeup when PID is dead + no done file + slot older than grace", () => {
     // PID that we know cannot exist (32-bit range max, never reused)
     fs.writeFileSync(path.join(tmp, "run-plan-codex-dead.pid"), "999999999");

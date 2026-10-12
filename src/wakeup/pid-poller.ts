@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { deleteRunPlanSlot, listRunPlanSlots } from "../db/database.js";
 import type { RunPlanSlotRow } from "../db/types.js";
-import { enqueueWakeup } from "./queue.js";
+import { writeWakeupFile } from "../scheduler/wakeup-writer.js";
+import { resolveWakeupDir } from "./paths.js";
 import { WakeupPayloadSchema, type WakeupPayload } from "./types.js";
 
 /**
@@ -34,6 +35,8 @@ const MIN_AGE_MS = 60_000;
 export interface PollDeps {
   /** Directory holding pid + done files. Default: /tmp */
   tmpDir?: string;
+  /** Where the default dispatch drops wakeup files. Default: resolveWakeupDir(). */
+  wakeupDir?: string;
   /** Now, in ms. Injectable for tests. */
   now?: () => number;
   /** Injectable for tests — list of tracked slots. Defaults to DB. */
@@ -53,7 +56,15 @@ export function pollOnce(deps: PollDeps = {}): void {
   const now = (deps.now ?? Date.now)();
   const listSlots = deps.listSlots ?? listRunPlanSlots;
   const onProcessed = deps.onSlotProcessed ?? deleteRunPlanSlot;
-  const enqueue = deps.enqueue ?? enqueueWakeup;
+  // Default: drop a wakeup file, the same route ScheduleWakeup uses, so the
+  // WakeupWatcher wakes an idle channel right away (and only queues when a
+  // session is active). Calling enqueueWakeup() directly left idle channels
+  // asleep until some later session in that channel happened to end.
+  const enqueue = deps.enqueue ?? ((payload: WakeupPayload) => {
+    writeWakeupFile(deps.wakeupDir ?? resolveWakeupDir(), payload).catch((e) => {
+      console.warn(`[pid-poller] writing wakeup file failed:`, e instanceof Error ? e.message : e);
+    });
+  });
 
   let slots: RunPlanSlotRow[];
   try {
@@ -142,7 +153,7 @@ function handleSlot(
 
   enqueue(parsed.data);
   console.log(
-    `[pid-poller] slot ${row.slot} — codex PID ${pid} dead with no done file → wakeup enqueued for ${row.channel_id}`,
+    `[pid-poller] slot ${row.slot} — codex PID ${pid} dead with no done file → wakeup dispatched to ${row.channel_id}`,
   );
   onProcessed(row.slot);
 }
