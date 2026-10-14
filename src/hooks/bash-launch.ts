@@ -26,7 +26,11 @@ export function extractCodexSlot(command: string): string | null {
   // Guard: only bother matching if the command actually mentions codex.
   // This keeps the hot path cheap for the many Bash calls that have
   // nothing to do with codex.
-  if (!command.includes("codex") && !command.includes("run-plan-codex-")) return null;
+  // Only an actual launch counts. Status checks also mention the log path
+  // (`tail -60 /tmp/run-plan-codex-$SLOT.log`); registering a slot for them
+  // re-armed the PID poller after the run was verified and its done file
+  // cleared → bogus "codex died without done marker" wakeups.
+  if (!/\bcodex\s+exec\b/.test(command)) return null;
 
   const m = command.match(CODEX_LAUNCH_LOG_RE);
   if (!m) return null;

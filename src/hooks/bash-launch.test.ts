@@ -38,6 +38,16 @@ nohup codex exec - --dangerously-bypass-approvals-and-sandbox < "$PROMPT_FILE" >
     expect(extractCodexSlot(braced)).toBe("R-180.3-slice-c_");
   });
 
+  // Regression (2026-10-14): status checks read the log too — e.g. run-plan
+  // Step 7's `tail -60 /tmp/run-plan-codex-$SLOT.log`. Registering a slot for
+  // those made the PID poller fire a bogus "codex died without done marker"
+  // wakeup after the run was already verified (its done file cleared).
+  it("ignores commands that only read the codex log (no `codex exec`)", () => {
+    expect(extractCodexSlot('SLOT=R-237-emit-dw-sync-stats_; tail -60 /tmp/run-plan-codex-$SLOT.log | grep -v "^\\s*$"')).toBeNull();
+    expect(extractCodexSlot("tail -5 /tmp/run-plan-codex-R-184-impl-plan.log")).toBeNull();
+    expect(extractCodexSlot("grep DONE /tmp/run-plan-codex-R-184-impl-plan.log # codex status")).toBeNull();
+  });
+
   it("returns null for an unexpanded $SLOT with no assignment in the command", () => {
     const cmd = 'nohup codex exec - > "/tmp/run-plan-codex-$SLOT.log" 2>&1 &';
     expect(extractCodexSlot(cmd)).toBeNull();
