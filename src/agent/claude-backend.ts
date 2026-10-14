@@ -1,4 +1,4 @@
-import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pluginRegistry } from "../bot/client.js";
@@ -7,6 +7,10 @@ import { createPreToolUseHook } from "../hooks/pre-tool-use.js";
 import { resolveWakeupDir } from "../wakeup/paths.js";
 import type { AgentBackend, BackendStartOptions, NormalizedEvent } from "./backend.js";
 import { assistantContentToEvents, sdkMessageToEvent, translateTaskMessage, type TaskTranslateState } from "./claude-translate.js";
+import { InputCloser } from "./input-closer.js";
+
+/** Idle-with-nothing-live must hold this long before the prompt stream ends. */
+const INPUT_CLOSE_GRACE_MS = 3000;
 
 const READ_ONLY_TOOLS = new Set([
   "Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite",
@@ -61,8 +65,18 @@ export class ClaudeBackend implements AgentBackend {
     await ensureFreshCredentials();
 
     const skipPerms = opts.skipPermissions;
+    // Streaming input keeps the control channel open for the whole run, so
+    // hooks / canUseTool keep working in later turns (see input-closer.ts).
+    let endInput!: () => void;
+    const inputDone = new Promise<void>((resolve) => { endInput = resolve; });
+    const closer = new InputCloser(INPUT_CLOSE_GRACE_MS, () => endInput());
+    const promptText = opts.prompt;
+    async function* promptStream(): AsyncGenerator<SDKUserMessage> {
+      yield { type: "user", message: { role: "user", content: promptText }, parent_tool_use_id: null, session_id: "" } as SDKUserMessage;
+      await inputDone;
+    }
     this.queryInstance = query({
-      prompt: opts.prompt,
+      prompt: promptStream(),
       options: {
         cwd: opts.cwd,
         plugins: pluginRegistry.toSdkPluginConfig(),
@@ -74,6 +88,8 @@ export class ClaudeBackend implements AgentBackend {
           PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}`,
           WAKEUP_CHANNEL_ID: opts.channelId,
           WAKEUP_DIR: resolveWakeupDir(),
+          // session_state_changed (idle / running) drives InputCloser.
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
         },
         ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}),
         ...(opts.model ? { model: opts.model } : {}),
@@ -164,8 +180,13 @@ export class ClaudeBackend implements AgentBackend {
             for (const ev of assistantContentToEvents(message)) this.pushEvent(ev);
             continue;
           }
+          if (m.type === "system" && m.subtype === "session_state_changed") {
+            closer.state(String((message as { state?: unknown }).state));
+            continue;
+          }
           if (m.type === "system" && (m.subtype === "background_tasks_changed" || m.subtype?.startsWith("task_"))) {
             const ev = translateTaskMessage(message, taskState);
+            if (ev?.type === "background_tasks") closer.live(ev.tasks.length);
             if (ev) this.pushEvent(ev);
             continue;
           }
@@ -173,6 +194,7 @@ export class ClaudeBackend implements AgentBackend {
           if (!translated) continue;
           if (translated.type === "result") {
             heldResult = translated;
+            closer.result();
             continue;
           }
           this.pushEvent(translated);
@@ -180,6 +202,7 @@ export class ClaudeBackend implements AgentBackend {
       } catch (e) {
         sdkError = e;
       } finally {
+        closer.closeNow();
         // Deliver the final result even if the SDK threw after it (e.g. exit
         // code 1 after "Credit balance is too low") — the main loop yields it
         // and returns before surfacing sdkError, matching the old behavior of

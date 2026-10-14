@@ -10,6 +10,8 @@ interface SdkController {
   end: () => void;
   interrupt: ReturnType<typeof vi.fn>;
   capturedCanUseTool: ((toolName: string, input: Record<string, unknown>) => Promise<unknown>) | null;
+  capturedPrompt: unknown;
+  capturedEnv: Record<string, unknown> | null;
 }
 
 const sdkController: SdkController = {
@@ -17,12 +19,16 @@ const sdkController: SdkController = {
   end: () => { throw new Error("SDK not initialized"); },
   interrupt: vi.fn(),
   capturedCanUseTool: null,
+  capturedPrompt: null,
+  capturedEnv: null,
 };
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   return {
-    query: (opts: { options: { canUseTool?: (t: string, i: Record<string, unknown>) => Promise<unknown> } }) => {
+    query: (opts: { prompt: unknown; options: { canUseTool?: (t: string, i: Record<string, unknown>) => Promise<unknown>; env?: Record<string, unknown> } }) => {
       sdkController.capturedCanUseTool = opts.options.canUseTool ?? null;
+      sdkController.capturedPrompt = opts.prompt;
+      sdkController.capturedEnv = opts.options.env ?? null;
 
       const queue: unknown[] = [];
       let resolver: (() => void) | null = null;
@@ -425,5 +431,27 @@ describe("ClaudeBackend", () => {
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ type: "result", text: "PONG" });
     expect(events.some((e) => e.type === "text_delta" && e.text === "PONG")).toBe(true);
+  });
+
+  // Regression (2026-10-14): a string prompt makes the SDK close the control
+  // channel after the first result, so hooks/canUseTool in later turns were
+  // cancelled ("The user doesn't want to take this action right now. STOP…").
+  it("feeds the prompt as a streaming input that ends when the run ends", async () => {
+    const backend = new ClaudeBackend();
+    const consume = (async () => { for await (const _ of backend.start(makeStartOpts())) void _; })();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sdkController.capturedEnv).toMatchObject({ CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" });
+    const it = (sdkController.capturedPrompt as AsyncIterable<{ type: string; message: { content: string } }>)[Symbol.asyncIterator]();
+    const first = await it.next();
+    expect(first.value).toMatchObject({ type: "user", message: { role: "user", content: "test" } });
+    let finished = false;
+    const second = it.next().then((r) => { finished = r.done === true; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(finished).toBe(false); // input stays open while the run is live
+    sdkController.push({ type: "result", subtype: "success", result: "ok" });
+    sdkController.end();
+    await consume;
+    await second;
+    expect(finished).toBe(true); // closed once the stream ended
   });
 });
