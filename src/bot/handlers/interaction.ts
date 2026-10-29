@@ -8,11 +8,10 @@ import {
   MessageFlags,
 } from "discord.js";
 import fs from "node:fs";
-import path from "node:path";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { upsertSession, getProject, getSession, clearSessionId, setBackend } from "../../db/database.js";
-import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js";
+import { findSessionFile, getLastAssistantMessage } from "../commands/sessions.js";
 import { detectCodex } from "../../agent/codex-detect.js";
 import { L } from "../../utils/i18n.js";
 import { formatTaskDetail } from "../../claude/task-board.js";
@@ -29,6 +28,11 @@ export async function handleButtonInteraction(
   }
 
   const customId = interaction.customId;
+  if (customId.startsWith("card-")) {
+    const { handleTaskCardInteraction } = await import("./task-card.js");
+    await handleTaskCardInteraction(interaction);
+    return;
+  }
   // Use split with limit to handle session IDs that might contain colons
   const colonIndex = customId.indexOf(":");
   const action = colonIndex === -1 ? customId : customId.slice(0, colonIndex);
@@ -109,7 +113,9 @@ export async function handleButtonInteraction(
   // board as "Stopped".
   if (action === "stop" && interaction.message.flags.has(MessageFlags.IsComponentsV2)) {
     await interaction.deferUpdate();
-    await sessionManager.stopSession(requestId);
+    if (!(await sessionManager.stopSession(requestId))) {
+      await interaction.followUp({ content: L("No active session.", "활성 세션이 없습니다."), ephemeral: true });
+    }
     return;
   }
 
@@ -226,9 +232,21 @@ export async function handleButtonInteraction(
     return;
   }
 
+  // Session controls retain their provider so old menus cannot resume across backends.
+  let selectedSessionId = requestId;
+  if (action === "session-resume" || action === "session-delete") {
+    const separator = requestId.indexOf(":");
+    const provider = separator === -1 ? "claude" : requestId.slice(0, separator);
+    selectedSessionId = separator === -1 ? requestId : requestId.slice(separator + 1);
+    if (provider !== (getProject(interaction.channelId)?.backend ?? "claude")) {
+      await interaction.update({ content: L("Backend changed. Run /sessions again.", "백엔드가 변경되었습니다. /sessions를 다시 실행하세요."), embeds: [], components: [] });
+      return;
+    }
+  }
+
   // Handle session resume button
   if (action === "session-resume") {
-    const sessionId = requestId;
+    const sessionId = selectedSessionId;
     const channelId = interaction.channelId;
     const { randomUUID } = await import("node:crypto");
     upsertSession(randomUUID(), channelId, sessionId, "idle");
@@ -392,7 +410,7 @@ export async function handleButtonInteraction(
 
   // Handle session delete button
   if (action === "session-delete") {
-    const sessionId = requestId;
+    const sessionId = selectedSessionId;
     const channelId = interaction.channelId;
     const project = getProject(channelId);
 
@@ -405,9 +423,9 @@ export async function handleButtonInteraction(
       return;
     }
 
-    const sessionDir = findSessionDir(project.project_path);
-    if (sessionDir) {
-      const filePath = path.join(sessionDir, `${sessionId}.jsonl`);
+    await interaction.deferUpdate();
+    const filePath = await findSessionFile(project.project_path, sessionId, project.backend);
+    if (filePath) {
       try {
         fs.unlinkSync(filePath);
 
@@ -418,7 +436,7 @@ export async function handleButtonInteraction(
           upsertSession(randomUUID(), channelId, null, "idle");
         }
 
-        await interaction.update({
+        await interaction.editReply({
           embeds: [
             {
               title: L("Session Deleted", "세션 삭제됨"),
@@ -432,12 +450,14 @@ export async function handleButtonInteraction(
           components: [],
         });
       } catch {
-        await interaction.update({
+        await interaction.editReply({
           content: L("Failed to delete session file.", "세션 파일 삭제에 실패했습니다."),
           embeds: [],
           components: [],
         });
       }
+    } else {
+      await interaction.editReply({ content: L("Session file not found. Run /sessions again.", "세션 파일을 찾을 수 없습니다. /sessions를 다시 실행하세요."), embeds: [], components: [] });
     }
     return;
   }
@@ -485,6 +505,12 @@ export async function handleSelectMenuInteraction(
     return;
   }
 
+  if (interaction.customId.startsWith("card-")) {
+    const { handleTaskCardInteraction } = await import("./task-card.js");
+    await handleTaskCardInteraction(interaction);
+    return;
+  }
+
   // Handle AskUserQuestion multi-select
   if (interaction.customId.startsWith("ask-select:")) {
     const askRequestId = interaction.customId.slice("ask-select:".length);
@@ -509,7 +535,12 @@ export async function handleSelectMenuInteraction(
     return;
   }
 
-  if (interaction.customId === "session-select") {
+  if (interaction.customId === "session-select" || interaction.customId.startsWith("session-select:")) {
+    const provider = interaction.customId.split(":")[1] ?? "claude";
+    if (provider !== (getProject(interaction.channelId)?.backend ?? "claude")) {
+      await interaction.update({ content: L("Backend changed. Run /sessions again.", "백엔드가 변경되었습니다. /sessions를 다시 실행하세요."), embeds: [], components: [] });
+      return;
+    }
     const selectedSessionId = interaction.values[0];
 
     // Handle "New Session" option
@@ -540,9 +571,8 @@ export async function handleSelectMenuInteraction(
     const project = getProject(channelId);
     let lastMessage = "";
     if (project) {
-      const sessionDir = findSessionDir(project.project_path);
-      if (sessionDir) {
-        const filePath = path.join(sessionDir, `${selectedSessionId}.jsonl`);
+      const filePath = await findSessionFile(project.project_path, selectedSessionId, project.backend);
+      if (filePath) {
         try {
           lastMessage = await getLastAssistantMessage(filePath);
         } catch {
@@ -554,12 +584,12 @@ export async function handleSelectMenuInteraction(
     // Show Resume / Delete buttons
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`session-resume:${selectedSessionId}`)
+        .setCustomId(`session-resume:${provider}:${selectedSessionId}`)
         .setLabel(L("Resume", "재개"))
         .setStyle(ButtonStyle.Success)
         .setEmoji("▶️"),
       new ButtonBuilder()
-        .setCustomId(`session-delete:${selectedSessionId}`)
+        .setCustomId(`session-delete:${provider}:${selectedSessionId}`)
         .setLabel(L("Delete", "삭제"))
         .setStyle(ButtonStyle.Danger)
         .setEmoji("🗑️"),

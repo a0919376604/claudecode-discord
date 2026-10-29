@@ -31,6 +31,8 @@ import { TaskBoard, renderBoard, type BoardTask } from "./task-board.js";
 import { WakeupPayloadSchema } from "../wakeup/types.js";
 import type { AgentBackend } from "../agent/backend.js";
 import { getBackend } from "../agent/backend-factory.js";
+import { formatToolActivity } from "./tool-activity.js";
+import { CodexTaskCard } from "./codex-task-card.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -118,6 +120,10 @@ interface ActiveSession {
   channelId: string;
   sessionId: string | null; // Claude Agent SDK session ID
   dbId: string;
+  runId: string;
+  stopping?: Promise<void>;
+  cancelPending: () => void;
+  finished: Promise<void>;
 }
 
 // Pending approval requests: requestId -> resolve function
@@ -143,6 +149,7 @@ const pendingCustomInputs = new Map<string, { requestId: string }>();
 
 class SessionManager {
   private sessions = new Map<string, ActiveSession>();
+  private cards = new Map<string, { card: CodexTaskCard; prompt: string; projectPath: string; recovering?: boolean }>();
   private static readonly MAX_QUEUE_SIZE = 5;
   private messageQueue = new Map<string, { channel: TextChannel; prompt: string }[]>();
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string }>();
@@ -166,6 +173,13 @@ class SessionManager {
     const dbSession = !existingSession ? getSession(channelId) : undefined;
     const dbId = existingSession?.dbId ?? dbSession?.id ?? randomUUID();
     const resumeSessionId = existingSession?.sessionId ?? dbSession?.session_id ?? undefined;
+    const runId = randomUUID();
+    const pendingAbort = new AbortController();
+    let finishSession!: () => void;
+    const finished = new Promise<void>(resolve => { finishSession = resolve; });
+    const card = project.backend === "codex" ? new CodexTaskCard(runId, prompt) : undefined;
+    if (card) this.cards.set(channelId, { card, prompt, projectPath: project.project_path });
+    else this.cards.delete(channelId);
 
     // Update status to online
     upsertSession(dbId, channelId, resumeSessionId ?? null, "online");
@@ -174,16 +188,17 @@ class SessionManager {
     let responseBuffer = "";
     let lastEditTime = 0;
     const stopRow = createStopButton(channelId);
-    let currentMessage: Message = await channel.send({
+    let currentMessage: Message = await channel.send(card ? { ...card.render(), flags: SILENT } : {
       content: L("⏳ Thinking...", "⏳ 생각 중..."),
       components: [stopRow],
       flags: SILENT,
     });
+    card?.attach(currentMessage);
     const EDIT_INTERVAL = 1500; // ms between edits (Discord rate limit friendly)
     // After a tool flush finalizes currentMessage, the next streamed
     // chunk must create a fresh Discord message — editing the finalized
     // one would overwrite text the user has already seen below it.
-    let bufferFinalized = false;
+    let bufferFinalized = Boolean(card);
 
     // Activity tracking for progress display
     const startTime = Date.now();
@@ -209,6 +224,9 @@ class SessionManager {
     // The `as` cast widens the inferred type past the literal `null` so TS
     // doesn't treat later assignments inside async closures as `never`.
     let progressMessage = null as Message | null;
+    let lastToolId: unknown;
+    let lastProgressTime = 0;
+    let toolProgressTimer: NodeJS.Timeout | null = null;
 
     /**
      * Push responseBuffer to Discord. If the current message was finalized
@@ -260,23 +278,33 @@ class SessionManager {
       }, wait);
     };
 
-    const surfaceProgress = async () => {
+    const surfaceProgress = async (force = false) => {
+      if (card) { card.schedule(); return; }
       // With background tasks the board is the progress display (its header
       // carries the activity and tool count; elapsed time is a <t:…:R>).
       if (board) {
         scheduleBoard();
         return;
       }
+      if (force && Date.now() - lastProgressTime < EDIT_INTERVAL) {
+        if (!toolProgressTimer) {
+          toolProgressTimer = setTimeout(() => {
+            toolProgressTimer = null;
+            void surfaceProgress(true);
+          }, EDIT_INTERVAL - (Date.now() - lastProgressTime));
+        }
+        return;
+      }
       const content = buildProgressContent(
         lastActivity,
         Date.now() - startTime,
         toolUseCount,
-      );
+      ) + (model ? ` | ${model}` : "");
       const action = decideProgressAction({
         hasTextOutput,
         lastTextTime,
         now: Date.now(),
-        staleThresholdMs: PROGRESS_STALE_MS,
+        staleThresholdMs: force ? 0 : PROGRESS_STALE_MS,
         progressMessageExists: progressMessage !== null,
       });
 
@@ -285,14 +313,21 @@ class SessionManager {
           case "skip":
             return;
           case "edit-current":
+            lastProgressTime = Date.now();
             await currentMessage.edit({ content, components: [stopRow] });
             return;
           case "edit-progress":
             if (progressMessage) {
+              lastProgressTime = Date.now();
               await progressMessage.edit({ content, components: [stopRow] });
             }
             return;
           case "send-progress":
+            lastProgressTime = Date.now();
+            // Preserve pending answer text before placing progress below it.
+            await flushText();
+            responseBuffer = "";
+            bufferFinalized = true;
             progressMessage = await channel.send({ content, components: [stopRow], flags: SILENT });
             return;
         }
@@ -325,6 +360,10 @@ class SessionManager {
             `[session] Max duration ${maxDurationMin}min reached for ${channelId}, interrupting`,
           );
           const active = sessionsRef.get(channelId);
+          if (card && active?.runId === runId) {
+            await this.stopTask(channelId, runId);
+            return;
+          }
           if (active) {
             // 3s race: interrupt() can stall indefinitely on non-streaming
             // queries (see stopSession for the full explanation). We don't
@@ -367,8 +406,8 @@ class SessionManager {
         skipPermissions: isSkipPermissionsEnabled(),
         channelId,
         channel,   // required field — see ledger Ruling R2 (Task 4 fix round 1)
-        model: project.model ?? getConfig().CLAUDE_MODEL,
-        effort: (project.effort ?? undefined) as EffortLevel | undefined,
+        model: project.backend === "codex" ? project.codex_model ?? undefined : project.model ?? getConfig().CLAUDE_MODEL,
+        effort: project.backend === "codex" ? undefined : (project.effort ?? undefined) as EffortLevel | undefined,
       });
 
     let eventStream = runBackend(Boolean(resumeSessionId));
@@ -382,31 +421,43 @@ class SessionManager {
           channelId,
           sessionId: resumeSessionId ?? null,
           dbId,
+          runId,
+          cancelPending: () => pendingAbort.abort(),
+          finished,
         });
 
         try {
           for await (const event of eventStream) {
+            if (pendingAbort.signal.aborted && event.type !== "result") continue;
+            card?.observe(event);
             switch (event.type) {
+              case "plan_update": break;
               case "session_init": {
                 const active = this.sessions.get(channelId);
                 if (active) active.sessionId = event.sessionId;
                 upsertSession(dbId, channelId, event.sessionId, "online");
                 if (event.model && event.model !== lastModel) {
                   // First sighting just records; a real change gets announced.
-                  if (lastModel) {
+                  if (lastModel && !card) {
                     await channel.send(L(
-                      `🆕 Claude model changed: \`${lastModel}\` → \`${event.model}\``,
-                      `🆕 Claude 모델 변경: \`${lastModel}\` → \`${event.model}\``,
+                      `🆕 ${project.backend === "codex" ? "Codex" : "Claude"} model changed: \`${lastModel}\` → \`${event.model}\``,
+                      `🆕 ${project.backend === "codex" ? "Codex" : "Claude"} 모델 변경: \`${lastModel}\` → \`${event.model}\``,
                     )).catch(() => {});
                   }
                   setLastModel(channelId, event.model);
                   lastModel = event.model;
                 }
                 model = event.model ?? model;
+                if (card) await card.flush();
+                if (model) await surfaceProgress();
                 break;
               }
 
               case "text_delta": {
+                if (event.isReasoning) {
+                  lastActivity = L("Thinking...", "생각 중...");
+                  break;
+                }
                 if (progressMessage) {
                   // Text resumed after a silent phase. Drop the progress
                   // placeholder (and its Stop button) and continue in a new
@@ -419,9 +470,10 @@ class SessionManager {
                   responseBuffer = "";
                   bufferFinalized = true;
                 }
-                // Each event is a whole assistant text block; keep blocks from
-                // separate turns from gluing together ("...file.Done").
-                responseBuffer += responseBuffer.length > 0 ? `\n\n${event.text}` : event.text;
+                // Claude emits complete text blocks; Codex emits incremental tokens.
+                // Only complete blocks need a paragraph separator.
+                const separator = project.backend !== "codex" && responseBuffer.length > 0 ? "\n\n" : "";
+                responseBuffer += separator + event.text;
                 hasTextOutput = true;
                 const now = Date.now();
                 if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
@@ -434,22 +486,9 @@ class SessionManager {
 
               case "tool_start": {
                 toolUseCount++;
-                const toolLabels: Record<string, string> = {
-                  Read: L("Reading files", "파일 읽는 중"),
-                  Glob: L("Searching files", "파일 검색 중"),
-                  Grep: L("Searching code", "코드 검색 중"),
-                  Write: L("Writing file", "파일 작성 중"),
-                  Edit: L("Editing file", "파일 편집 중"),
-                  Bash: L("Running command", "명령어 실행 중"),
-                  WebSearch: L("Searching web", "웹 검색 중"),
-                  WebFetch: L("Fetching URL", "URL 가져오는 중"),
-                  TodoWrite: L("Updating tasks", "작업 업데이트 중"),
-                };
-                const filePath = typeof event.input.file_path === "string"
-                  ? ` \`${(event.input.file_path as string).split(/[\\/]/).pop()}\``
-                  : "";
-                lastActivity = `${toolLabels[event.toolName] ?? `Using ${event.toolName}`}${filePath}`;
-                await surfaceProgress();
+                lastToolId = event.input.id;
+                lastActivity = formatToolActivity(event.toolName, event.input);
+                await surfaceProgress(project.backend === "codex");
                 break;
               }
 
@@ -469,11 +508,14 @@ class SessionManager {
                 }
                 // Discord button
                 const { embed, row } = createToolApprovalEmbed(event.toolName, event.input, event.requestId);
+                if (card) row.setComponents(row.components.slice(0, 2));
                 updateSessionStatus(channelId, "waiting");
                 const approvalMsg = await channel.send({ content: ping, embeds: [embed], components: [row] });
+                card?.need(event.requestId, L(`Approve ${event.toolName}?`, `${event.toolName} 승인 필요`), approvalMsg.url);
                 board?.setNeedsYou(event.requestId, L(`Approve ${event.toolName}?`, `${event.toolName} 승인 필요`), approvalMsg.url);
                 scheduleBoard();
                 const clearNeed = () => {
+                  card?.clearNeed(event.requestId);
                   board?.clearNeedsYou(event.requestId);
                   scheduleBoard();
                 };
@@ -510,26 +552,42 @@ class SessionManager {
                 const answers: Record<string, string> = {};
                 let timedOut = false;
                 for (let qi = 0; qi < event.questions.length; qi++) {
+                  if (pendingAbort.signal.aborted) break;
                   const q = event.questions[qi];
                   const qRequestId = randomUUID();
                   const { embed, components } = createAskUserQuestionEmbed(q, qRequestId, qi, event.questions.length);
                   updateSessionStatus(channelId, "waiting");
                   const questionMsg = await channel.send({ content: ping, embeds: [embed], components });
+                  if (pendingAbort.signal.aborted) {
+                    await questionMsg.edit({ components: [] }).catch(() => {});
+                    break;
+                  }
+                  card?.need(qRequestId, q.question, questionMsg.url);
                   board?.setNeedsYou(qRequestId, L(`Waiting for your answer: ${q.question}`, `답변 대기: ${q.question}`), questionMsg.url);
                   void renderBoardNow();
                   const answer = await new Promise<string | null>((resolve) => {
-                    const t = setTimeout(() => {
+                    const finish = (answer: string | null) => {
+                      clearTimeout(t);
+                      pendingAbort.signal.removeEventListener("abort", cancel);
                       pendingQuestions.delete(qRequestId);
                       const ci = pendingCustomInputs.get(channelId);
                       if (ci?.requestId === qRequestId) pendingCustomInputs.delete(channelId);
-                      resolve(null);
-                    }, 5 * 60 * 1000);
+                      resolve(answer);
+                    };
+                    const cancel = () => {
+                      void questionMsg.edit({ components: [] }).catch(() => {});
+                      finish(null);
+                    };
+                    const t = setTimeout(() => finish(null), 5 * 60 * 1000);
                     pendingQuestions.set(qRequestId, {
-                      resolve: (ans) => { clearTimeout(t); pendingQuestions.delete(qRequestId); resolve(ans); },
+                      resolve: finish,
                       channelId,
                     });
+                    pendingAbort.signal.addEventListener("abort", cancel, { once: true });
+                    if (pendingAbort.signal.aborted) cancel();
                   });
                   board?.clearNeedsYou(qRequestId);
+                  card?.clearNeed(qRequestId);
                   scheduleBoard();
                   if (answer === null) {
                     timedOut = true;
@@ -537,6 +595,7 @@ class SessionManager {
                   }
                   answers[q.question] = answer;
                 }
+                if (pendingAbort.signal.aborted) break;
                 updateSessionStatus(channelId, "online");
                 if (timedOut) {
                   // Deny via approval channel — backend translates to SDK-level deny.
@@ -551,6 +610,7 @@ class SessionManager {
               }
 
               case "background_tasks": {
+                if (card) break;
                 if (event.tasks.length > 0 && !board) {
                   board = new TaskBoard(channelId, startTime);
                   lastBoards.set(channelId, board);
@@ -576,18 +636,41 @@ class SessionManager {
                 break;
 
               case "tool_end":
-                // Optional signal — no-op for now (heartbeat already covers)
+                if (event.input && (lastToolId === undefined || lastToolId === event.input.id)) {
+                  lastActivity = formatToolActivity(event.toolName, event.input, event.ok);
+                  await surfaceProgress(project.backend === "codex");
+                }
                 break;
 
               case "result": {
+                const pendingToolProgress = toolProgressTimer !== null;
+                if (toolProgressTimer) clearTimeout(toolProgressTimer);
+                toolProgressTimer = null;
+                if (pendingToolProgress && progressMessage && responseBuffer.length === 0) {
+                  // A fast final tool completion must not leave a stale
+                  // "Running" status on the progress message after the turn.
+                  lastProgressTime = 0;
+                  await surfaceProgress(true);
+                }
                 const isError = event.isError;
                 const resultText = event.text;
+                if (card && !hasTextOutput && !isError && resultText) responseBuffer = resultText;
                 if (responseBuffer.length > 0) {
                   try {
                     await flushText();
                   } catch (e) {
                     console.warn(`[flush] Failed to edit final message for ${channelId}:`, e instanceof Error ? e.message : e);
                   }
+                }
+                if (card) {
+                  await this.sessions.get(channelId)?.stopping;
+                  resultIsError = isError;
+                  const stopped = card.phase === "stopping";
+                  const authHint = isError ? backend.getAuthErrorHint(new Error(resultText)) : null;
+                  await card.finish(stopped ? "stopped" : isError ? "failed" : "done", [resultText, authHint].filter(Boolean).join("\n\n"));
+                  updateSessionStatus(channelId, isError || stopped ? "offline" : "idle");
+                  hasResult = true;
+                  break;
                 }
                 try {
                   await currentMessage.edit({ components: [createCompletedButton()] });
@@ -603,6 +686,7 @@ class SessionManager {
                   getConfig().SHOW_COST,
                   isError,
                   model,
+                  toolUseCount,
                 );
                 resultIsError = isError;
                 await channel.send({
@@ -669,6 +753,13 @@ class SessionManager {
       const authHint = backend.getAuthErrorHint(error);
       if (authHint) errMsg += "\n\n" + authHint;
 
+      if (card) {
+        await this.sessions.get(channelId)?.stopping;
+        await flushText();
+        await card.finish(card.phase === "stopping" ? "stopped" : "failed", errMsg);
+        updateSessionStatus(channelId, "offline");
+        return;
+      }
       const resultEmbed = createResultEmbed(
         errMsg,
         undefined,
@@ -684,87 +775,105 @@ class SessionManager {
       });
       updateSessionStatus(channelId, "offline");
     } finally {
-      clearInterval(heartbeatInterval);
-      if (durationTimer) clearTimeout(durationTimer);
-      // Only clear the sessions entry if it's still OURS. If stopSession()
-      // (or a stale-loop watchdog) already deleted it and the user already
-      // started a new send, the entry under channelId now belongs to that
-      // newer invocation — wiping it here would silently break their next
-      // task. Compare by dbId since that's unique per sendMessage call.
-      const current = this.sessions.get(channelId);
-      if (current && current.dbId === dbId) {
-        this.sessions.delete(channelId);
-      }
+      try {
+        clearInterval(heartbeatInterval);
+        if (toolProgressTimer) clearTimeout(toolProgressTimer);
+        if (durationTimer) clearTimeout(durationTimer);
+        // Only clear the sessions entry if it's still OURS. If stopSession()
+        // (or a stale-loop watchdog) already deleted it and the user already
+        // started a new send, the entry under channelId now belongs to that
+        // newer invocation — wiping it here would silently break their next
+        // task. The DB session id is reused across turns; runId is unique.
+        const current = this.sessions.get(channelId);
+        if (current?.runId === runId) await current.stopping;
+        const wasStopped = current?.runId !== runId;
+        if (current && current.runId === runId) {
+          this.sessions.delete(channelId);
+        }
+        if (card && !card.terminal) {
+          await flushText();
+          const stopped = card.phase === "stopping";
+          await card.finish(stopped ? "stopped" : "failed", stopped
+            ? L("Stopped. Existing work is preserved; check it before continuing.", "중지됨. 기존 작업은 보존됩니다. 계속하기 전에 확인하세요.")
+            : L("The connection ended before a final result. Check existing work before continuing.", "최종 결과 전에 연결이 종료되었습니다. 계속하기 전에 기존 작업을 확인하세요."));
+          if (!this.sessions.has(channelId)) updateSessionStatus(channelId, "offline");
+        }
+        if (card && Date.now() - startTime > LONG_TASK_MS) {
+          await channel.send({ content: `${ping ?? ""} ${L("Codex task ended", "Codex 작업 종료")}${card.url ? ` · ${card.url}` : ""}`, allowedMentions: { users: mentionId ? [mentionId] : [] } }).catch(() => {});
+        }
 
-      // Strip the Stop button from any lingering progress message so the
-      // user can't click it on a session that's already over. We don't
-      // delete the message — its content is a useful audit trail of what
-      // Claude was doing during the silent phase.
-      if (progressMessage) {
-        progressMessage.edit({ components: [] }).catch(() => {});
-      }
+        // Strip the Stop button from any lingering progress message so the
+        // user can't click it on a session that's already over. We don't
+        // delete the message — its content is a useful audit trail of what
+        // Claude was doing during the silent phase.
+        if (progressMessage) {
+          progressMessage.edit({ components: [] }).catch(() => {});
+        }
 
-      // Final board state: no Stop button; whatever was still running died
-      // with the session.
-      if (board) {
-        if (boardTimer) clearTimeout(boardTimer);
-        boardTimer = null;
-        board.finalize(Date.now());
-        await renderBoardNow(!hasResult ? "stopped" : resultIsError ? "failed" : "done", false);
-      }
+        // Final board state: no Stop button; whatever was still running died
+        // with the session.
+        if (board) {
+          if (boardTimer) clearTimeout(boardTimer);
+          boardTimer = null;
+          board.finalize(Date.now());
+          await renderBoardNow(wasStopped || !hasResult ? "stopped" : resultIsError ? "failed" : "done", false);
+        }
 
-      // Clean up any pending approvals/questions for this channel
-      for (const [id, entry] of pendingApprovals) {
-        if (entry.channelId === channelId) pendingApprovals.delete(id);
-      }
-      for (const [id, entry] of pendingQuestions) {
-        if (entry.channelId === channelId) pendingQuestions.delete(id);
-      }
-      pendingCustomInputs.delete(channelId);
+        // Clean up any pending approvals/questions for this channel
+        for (const [id, entry] of pendingApprovals) {
+          if (entry.channelId === channelId) pendingApprovals.delete(id);
+        }
+        for (const [id, entry] of pendingQuestions) {
+          if (entry.channelId === channelId) pendingQuestions.delete(id);
+        }
+        pendingCustomInputs.delete(channelId);
 
-      // Process next queued message if any
-      const queue = this.messageQueue.get(channelId);
-      const hadInMemoryQueue = Boolean(queue && queue.length > 0);
-      if (queue && queue.length > 0) {
-        const next = queue.shift()!;
-        if (queue.length === 0) this.messageQueue.delete(channelId);
-        const remaining = queue.length;
-        const preview = next.prompt.length > 40 ? next.prompt.slice(0, 40) + "…" : next.prompt;
-        const msg = remaining > 0
-          ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
-          : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
-        channel.send(msg).catch(() => {});
-        this.sendMessage(next.channel, next.prompt).catch((err) => {
-          console.error("Queue sendMessage error:", err);
-        });
-      }
+        // Process next queued message if any
+        const queue = this.messageQueue.get(channelId);
+        const hadInMemoryQueue = Boolean(queue && queue.length > 0);
+        if (queue && queue.length > 0) {
+          const next = queue.shift()!;
+          if (queue.length === 0) this.messageQueue.delete(channelId);
+          const remaining = queue.length;
+          const preview = next.prompt.length > 40 ? next.prompt.slice(0, 40) + "…" : next.prompt;
+          const msg = remaining > 0
+            ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
+            : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
+          channel.send(msg).catch(() => {});
+          this.sendMessage(next.channel, next.prompt).catch((err) => {
+            console.error("Queue sendMessage error:", err);
+          });
+        }
 
-      // After in-memory messageQueue is drained (or if it was empty),
-      // check the persistent wakeup_queue. This is the recovery path for
-      // background tasks that asked to wake Claude up while a session
-      // was active.
-      if (!hadInMemoryQueue) {
-        const wakeupRow = drainOldest(channelId);
-        if (wakeupRow) {
-          try {
-            const payload = WakeupPayloadSchema.parse(JSON.parse(wakeupRow.payload_json));
-            const preview = payload.prompt.length > 40
-              ? payload.prompt.slice(0, 40) + "…"
-              : payload.prompt;
-            channel.send(L(
-              `🎯 Processing queued wakeup from ${payload.source}...\n> ${preview}`,
-              `🎯 대기 중이던 wakeup을 처리합니다 (${payload.source})...\n> ${preview}`,
-            )).catch(() => {});
-            this.wakeUp(channel, payload.prompt, payload.source).catch((err) => {
-              console.error("Queue wakeUp error:", err);
-            });
-          } catch (e) {
-            console.warn(
-              `[wakeup] dropping malformed queue row id=${wakeupRow.id}:`,
-              e instanceof Error ? e.message : e,
-            );
+        // After in-memory messageQueue is drained (or if it was empty),
+        // check the persistent wakeup_queue. This is the recovery path for
+        // background tasks that asked to wake Claude up while a session
+        // was active.
+        if (!hadInMemoryQueue) {
+          const wakeupRow = drainOldest(channelId);
+          if (wakeupRow) {
+            try {
+              const payload = WakeupPayloadSchema.parse(JSON.parse(wakeupRow.payload_json));
+              const preview = payload.prompt.length > 40
+                ? payload.prompt.slice(0, 40) + "…"
+                : payload.prompt;
+              channel.send(L(
+                `🎯 Processing queued wakeup from ${payload.source}...\n> ${preview}`,
+                `🎯 대기 중이던 wakeup을 처리합니다 (${payload.source})...\n> ${preview}`,
+              )).catch(() => {});
+              this.wakeUp(channel, payload.prompt, payload.source).catch((err) => {
+                console.error("Queue wakeUp error:", err);
+              });
+            } catch (e) {
+              console.warn(
+                `[wakeup] dropping malformed queue row id=${wakeupRow.id}:`,
+                e instanceof Error ? e.message : e,
+              );
+            }
           }
         }
+      } finally {
+        finishSession();
       }
     }
   }
@@ -809,6 +918,7 @@ class SessionManager {
   async stopSession(channelId: string): Promise<boolean> {
     const session = this.sessions.get(channelId);
     if (!session) return false;
+    if (this.getTaskCard(channelId, session.runId)) return this.stopTask(channelId, session.runId);
 
     // ALWAYS evict the entry from the map FIRST. This unblocks the channel
     // for new messages even if interrupt() hangs (which it can: the SDK
@@ -848,6 +958,36 @@ class SessionManager {
 
   isActive(channelId: string): boolean {
     return this.sessions.has(channelId);
+  }
+
+  getTaskCard(channelId: string, runId: string): CodexTaskCard | undefined {
+    const task = this.cards.get(channelId);
+    return task?.card.runId === runId ? task.card : undefined;
+  }
+
+  async stopTask(channelId: string, runId: string): Promise<boolean> {
+    const card = this.getTaskCard(channelId, runId);
+    const session = this.sessions.get(channelId);
+    if (!card || card.terminal || card.phase === "stopping" || session?.runId !== runId) return false;
+    card.requestStop();
+    void card.flush();
+    session.stopping = session.backend.interrupt();
+    session.cancelPending();
+    await session.stopping;
+    await session.finished;
+    return true;
+  }
+
+  async recoverTask(channel: TextChannel, runId: string, userId?: string): Promise<boolean> {
+    const task = this.cards.get(channel.id);
+    const project = getProject(channel.id);
+    if (!task || task.card.runId !== runId || !["failed", "stopped"].includes(task.card.phase) || task.recovering || this.isActive(channel.id) || project?.backend !== "codex" || project.project_path !== task.projectPath) return false;
+    task.recovering = true;
+    // The recovery instruction is not an automatic replay of prior tool calls.
+    const prompt = `Continue the interrupted task below. First inspect the current worktree, existing changes, and available previous results. Identify what already completed, then perform only the remaining work. Do not blindly repeat earlier writes or external actions.\n\nOriginal request:\n${task.prompt}`;
+    try { await this.sendMessage(channel, prompt, userId); }
+    finally { task.recovering = false; }
+    return true;
   }
 
   /** Task from the channel's latest board (for the 📄 button). */

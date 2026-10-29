@@ -5,6 +5,7 @@ import os from "node:os";
 import {
   scanInstalledPlugins,
   scanUserCommands,
+  scanUserSkills,
   scanProjectCommands,
   scanAllCommandSources,
 } from "./discovery.js";
@@ -268,6 +269,38 @@ describe("scanUserCommands", () => {
     const names = result.commands.map((c) => c.commandName).sort();
     expect(names).toEqual(["ship-default", "ship-visible"]);
     expect(names).not.toContain("ship-hidden");
+  });
+});
+
+describe("scanUserSkills", () => {
+  it("registers only skills that opt in with discord-visible: true", async () => {
+    const skillsDir = path.join(tmpHome, ".claude", "skills");
+    const write = (name: string, fm: string) => {
+      fs.mkdirSync(path.join(skillsDir, name), { recursive: true });
+      fs.writeFileSync(path.join(skillsDir, name, "SKILL.md"), `---\n${fm}\n---\nbody`);
+    };
+    write("pr-review", `name: pr-review\ndescription: Review a PR.\nargument-hint: "[<PR/MR number or URL>] [--comment]"\ndiscord-visible: true`);
+    write("redis-core", `name: redis-core\ndescription: Redis guidance.`);
+    write("a-skill-name-way-too-long-for-discord-slash", `description: Long.`);
+    fs.mkdirSync(path.join(skillsDir, "no-skill-md"));
+
+    const result = await scanUserSkills({ homeDir: tmpHome });
+    expect(result.commands).toHaveLength(1);
+    expect(result.commands[0]).toMatchObject({
+      scope: "user",
+      commandName: "pr-review",
+      description: "Review a PR.",
+      parsedParams: [], // unparseable hint → single free-form `args`, like /code-review
+    });
+    expect(result.warnings).toEqual([]); // hidden skills stay quiet
+  });
+
+  it("is included by scanAllCommandSources", async () => {
+    const dir = path.join(tmpHome, ".claude", "skills", "pr-review");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), `---\ndescription: Review.\ndiscord-visible: true\n---`);
+    const result = await scanAllCommandSources({ homeDir: tmpHome });
+    expect(result.commands.map((c) => c.commandName)).toContain("pr-review");
   });
 });
 

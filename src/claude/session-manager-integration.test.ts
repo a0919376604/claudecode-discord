@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { getProject } from "../db/database.js";
+import { notificationToEvent } from "../agent/codex-translate.js";
 import { MockAgentBackend } from "../agent/mock-backend.js";
 
 // ─── Module mocks (hoisted by vitest) ───────────────────────────────────────
@@ -23,6 +25,7 @@ vi.mock("../db/database.js", () => ({
   getSession: vi.fn(() => undefined),
   upsertSession: vi.fn(),
   updateSessionStatus: vi.fn(),
+  setLastModel: vi.fn(),
   setAutoApprove: vi.fn(),
 }));
 
@@ -124,6 +127,228 @@ describe("SessionManager with MockAgentBackend", () => {
       prompt: "test prompt",
       channelId: "ch1",
     });
+  });
+
+  it("joins Codex token deltas without inserting paragraph breaks", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    const project = getProject("ch1")!;
+    vi.mocked(getProject).mockReturnValueOnce({ ...project, backend: "codex" });
+    const channel = makeMockChannel();
+    for (const delta of ["修", "好了", "，", "這是正常", "排版。\n", "第二行"]) {
+      testBackend.enqueueEvent(notificationToEvent({ method: "item/agentMessage/delta", params: { delta } })!);
+    }
+    testBackend.enqueueEvent({ type: "result", text: "", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "test prompt");
+    const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
+    expect(messages[1].content).toBe("修好了，這是正常排版。\n第二行");
+    expect(messages[0].content).toBe("");
+  });
+
+  it("shows the effective Codex model in progress and the result footer", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "session_init", sessionId: "codex-1", model: "actual-codex-model" });
+    const done = sessionManager.sendMessage(channel, "hello");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const messages = (channel as unknown as { messages: Array<{ content: string; embeds?: Array<{ toJSON(): { footer?: { text: string } } }> }> }).messages;
+    expect(JSON.stringify(messages[0].embeds)).toContain("actual-codex-model");
+    testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
+    testBackend.endStream();
+    await done;
+    expect(messages.filter(m => m.embeds?.length)).toHaveLength(1);
+    expect(JSON.stringify(messages[0].embeds)).toContain("actual-codex-model");
+  });
+
+  it("keeps Codex reasoning out of the assistant answer", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "text_delta", text: "internal reasoning", isReasoning: true });
+    testBackend.enqueueEvent({ type: "text_delta", text: "Actual answer" });
+    testBackend.enqueueEvent({ type: "result", text: "", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "hello");
+    const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
+    expect(messages[1].content).toBe("Actual answer");
+    expect(JSON.stringify(messages)).not.toContain("internal reasoning");
+  });
+
+  it("shows Codex tool details after commentary, coalesces updates, and reports failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const { sessionManager } = await import("./session-manager.js");
+      vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+      const channel = makeMockChannel();
+      testBackend.enqueueEvent({ type: "text_delta", text: "I will run tests." });
+      testBackend.enqueueEvent(notificationToEvent({ method: "item/started", params: { item: {
+        type: "commandExecution", id: "cmd-1", command: "npm test",
+      } } })!);
+      const done = sessionManager.sendMessage(channel, "test");
+      await vi.advanceTimersByTimeAsync(1600);
+      const messages = (channel as unknown as { messages: Array<{ content: string; edit: ReturnType<typeof vi.fn> }> }).messages;
+      const progress = messages[0];
+      expect(progress).toBeDefined();
+      expect(JSON.stringify(progress)).toContain("npm test");
+      expect(messages[1].content).toBe("I will run tests.");
+      const edits = progress!.edit.mock.calls.length;
+      for (let i = 0; i < 5; i++) {
+        testBackend.enqueueEvent({ type: "tool_start", toolName: "Bash", input: { id: `cmd-${i + 2}`, command: "npm test" } });
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      expect(progress!.edit.mock.calls.length - edits).toBeLessThanOrEqual(1);
+      testBackend.enqueueEvent(notificationToEvent({ method: "item/completed", params: { item: {
+        type: "commandExecution", id: "cmd-6", command: "npm test", status: "failed", exitCode: 1,
+      } } })!);
+      testBackend.enqueueEvent({ type: "result", text: "Tests failed", isError: false });
+      testBackend.endStream();
+      await vi.advanceTimersByTimeAsync(10);
+      await done;
+      const runId = JSON.stringify(progress).match(/card-details:([a-f0-9-]+)/)![1];
+      expect(sessionManager.getTaskCard("ch1", runId)?.details()).toContain("❌");
+      expect(sessionManager.getTaskCard("ch1", runId)?.details()).toContain("npm test");
+      expect(JSON.stringify(progress)).toContain("6 tool calls");
+      expect(messages).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("includes tool counts even when a Codex turn finishes before its progress timer fires", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "session_init", sessionId: "c-1", model: "codex-model" });
+    testBackend.enqueueEvent({ type: "tool_start", toolName: "Bash", input: { command: "npm test" } });
+    testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "test");
+    const messages = (channel as unknown as { messages: Array<{ embeds?: Array<{ toJSON(): { footer?: { text: string } } }> }> }).messages;
+    const footer = messages.find(m => m.embeds?.length)?.embeds?.[0].toJSON().footer?.text;
+    expect(footer).toContain("1 tool calls");
+    expect(JSON.stringify(messages[0])).toContain("codex-model");
+  });
+
+  it("isolates Codex model preferences from Claude and expires old controls", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex", model: "opus", codex_model: "gpt-6.1-sol" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "result", text: "Connection lost", isError: true });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "Add feature");
+    expect(testBackend.lastStartOptions?.model).toBe("gpt-6.1-sol");
+    const messages = (channel as unknown as { messages: unknown[] }).messages;
+    const runId = JSON.stringify(messages[0]).match(/card-details:([a-f0-9-]+)/)![1];
+    expect(sessionManager.getTaskCard("ch1", runId)?.phase).toBe("failed");
+    expect(sessionManager.getTaskCard("other", runId)).toBeUndefined();
+    expect(await sessionManager.stopTask("ch1", "stale")).toBe(false);
+    expect(testBackend.interruptCalled).toBe(0);
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    await sessionManager.sendMessage(channel, "New task");
+    expect(testBackend.lastStartOptions?.model).toBeUndefined();
+    expect(sessionManager.getTaskCard("ch1", runId)).toBeUndefined();
+    expect(await sessionManager.recoverTask(channel, runId)).toBe(false);
+  });
+
+  it("keeps a stopping card active until the backend confirms interruption", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    const running = sessionManager.sendMessage(channel, "Run tests");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const runId = JSON.stringify((channel as unknown as { messages: unknown[] }).messages[0]).match(/card-details:([a-f0-9-]+)/)![1];
+    let acknowledge!: () => void;
+    const interrupt = vi.spyOn(testBackend, "interrupt").mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+      testBackend.endStream();
+    });
+    const stopping = sessionManager.stopTask("ch1", runId);
+    expect(sessionManager.getTaskCard("ch1", runId)?.phase).toBe("stopping");
+    expect(sessionManager.isActive("ch1")).toBe(true);
+    acknowledge();
+    await stopping;
+    await running;
+    expect(sessionManager.getTaskCard("ch1", runId)?.phase).toBe("stopped");
+    expect(sessionManager.isActive("ch1")).toBe(false);
+    interrupt.mockRestore();
+  });
+
+  it("recovers once by inspecting existing work before continuing", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    const project = { ...getProject("ch1")!, backend: "codex" as const };
+    vi.mocked(getProject).mockReturnValueOnce(project);
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "result", text: "Disconnected", isError: true });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "Add model setting");
+    const runId = JSON.stringify((channel as unknown as { messages: unknown[] }).messages[0]).match(/card-details:([a-f0-9-]+)/)![1];
+    vi.mocked(getProject).mockReturnValueOnce(project).mockReturnValueOnce(project).mockReturnValueOnce(project);
+    const first = sessionManager.recoverTask(channel, runId);
+    const duplicate = sessionManager.recoverTask(channel, runId);
+    expect(await first).toBe(true);
+    expect(await duplicate).toBe(false);
+    expect(testBackend.lastStartOptions?.prompt).toContain("First inspect the current worktree");
+    expect(testBackend.lastStartOptions?.prompt).toContain("Original request:\nAdd model setting");
+  });
+
+  it.each([false, true])("stopping cancels local question waits, custom input, and later questions (send pending=%s)", async holdSend => {
+    const { sessionManager } = await import("./session-manager.js");
+    const project = { ...getProject("ch1")!, backend: "codex" as const };
+    vi.mocked(getProject).mockReturnValueOnce(project);
+    const channel = makeMockChannel();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const send = channel.send as ReturnType<typeof vi.fn>;
+    const originalSend = send.getMockImplementation()!;
+    send.mockImplementation(async payload => {
+      const message = await originalSend(payload);
+      if (holdSend && JSON.stringify(payload).includes("ask-opt:")) await gate;
+      return message;
+    });
+    const question = { question: "Pick?", header: "Pick", options: [{ label: "A", description: "A" }], multiSelect: false };
+    testBackend.enqueueEvent({ type: "ask_question_request", requestId: "question", questions: [question, { ...question, question: "Second question?" }] });
+    const running = sessionManager.sendMessage(channel, "Add feature");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const messages = (channel as unknown as { messages: unknown[] }).messages;
+    const runId = JSON.stringify(messages[0]).match(/card-details:([a-f0-9-]+)/)![1];
+    const questionId = JSON.stringify(messages[1]).match(/ask-opt:([a-f0-9-]+):/)![1];
+    if (!holdSend) sessionManager.enableCustomInput(questionId, "ch1");
+    try {
+      const stopping = sessionManager.stopTask("ch1", runId);
+      release();
+      await stopping;
+      expect(sessionManager.isActive("ch1")).toBe(false);
+      expect(sessionManager.hasPendingCustomInput("ch1")).toBe(false);
+      expect(sessionManager.resolveQuestion(questionId, "A")).toBe(false);
+      expect(testBackend.questionResponses).toHaveLength(0);
+      expect(messages).toHaveLength(2);
+      expect(JSON.stringify(messages[1])).not.toContain("ask-opt:");
+      vi.mocked(getProject).mockReturnValueOnce(project).mockReturnValueOnce(project);
+      expect(await sessionManager.recoverTask(channel, runId)).toBe(true);
+    } finally {
+      release();
+      // Also release both questions on the RED path, so a failed assertion
+      // does not leave the test waiting for the production five-minute timeout.
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        for (const message of messages) {
+          const id = JSON.stringify(message).match(/ask-opt:([a-f0-9-]+):/)?.[1];
+          if (id) sessionManager.resolveQuestion(id, "A");
+        }
+      }
+      await running;
+    }
+  });
+
+  it("keeps paragraph breaks between complete Claude text blocks", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "text_delta", text: "First paragraph." });
+    testBackend.enqueueEvent({ type: "text_delta", text: "Second paragraph." });
+    testBackend.enqueueEvent({ type: "result", text: "", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "test prompt");
+    const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
+    expect(messages[0].content).toBe("First paragraph.\n\nSecond paragraph.");
   });
 
   it("replaces the progress message when text resumes instead of stacking Stop buttons", async () => {

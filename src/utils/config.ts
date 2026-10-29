@@ -1,3 +1,6 @@
+// Commands read config during module initialization. Keep environment loading
+// here so split bundles cannot validate settings before index.ts loads .env.
+import "dotenv/config";
 import { z } from "zod";
 
 const envSchema = z.object({

@@ -50,10 +50,13 @@ function truncateDescription(desc: string): string {
  * the Claude CLI (terminal) but be hidden from Discord registration. Useful
  * for interactive or long-running commands that don't fit Discord's UX
  * (brainstorming, executor selection, multi-step bootstrap).
+ *
+ * `discordVisible` is undefined when the key is absent: commands treat that
+ * as visible, skills as hidden (they must opt in with `discord-visible: true`).
  */
 function parseFrontmatter(
   text: string,
-): { description: string; argumentHint?: string; discordVisible: boolean } | null {
+): { description: string; argumentHint?: string; discordVisible?: boolean } | null {
   if (!text.startsWith("---")) return null;
   const end = text.indexOf("\n---", 3);
   if (end < 0) return null;
@@ -63,7 +66,7 @@ function parseFrontmatter(
 
   let description: string | undefined;
   let argumentHint: string | undefined;
-  let discordVisible = true; // default: visible to Discord
+  let discordVisible: boolean | undefined;
 
   for (const line of lines) {
     const colon = line.indexOf(":");
@@ -83,6 +86,7 @@ function parseFrontmatter(
     else if (key === "discord-visible") {
       const v = value.toLowerCase();
       if (v === "false" || v === "no" || v === "0") discordVisible = false;
+      else if (v === "true" || v === "yes" || v === "1") discordVisible = true;
     }
   }
 
@@ -100,6 +104,10 @@ function parseFrontmatter(
  * `buildIdentity` lets the caller fill in the per-scope identity fields —
  * pluginName/pluginShortName/pluginInstallPath/projectPath — without
  * duplicating the parse logic.
+ *
+ * `skills` switches the layout from `<dir>/<name>.md` to
+ * `<dir>/<name>/SKILL.md` and makes registration opt-in
+ * (`discord-visible: true`) — most skills are knowledge packs, not commands.
  */
 function scanCommandsDir(
   commandsDir: string,
@@ -110,6 +118,7 @@ function scanCommandsDir(
     "pluginName" | "pluginShortName" | "pluginInstallPath" | "projectPath"
   >,
   warnings: string[],
+  skills = false,
 ): DiscoveredCommand[] {
   if (!fs.existsSync(commandsDir) || !fs.statSync(commandsDir).isDirectory()) {
     return [];
@@ -125,17 +134,14 @@ function scanCommandsDir(
 
   const out: DiscoveredCommand[] = [];
   for (const file of files) {
-    if (!file.endsWith(".md")) continue;
+    if (!skills && !file.endsWith(".md")) continue;
 
-    const commandName = file.slice(0, -3);
-    if (!DISCORD_NAME_RE.test(commandName)) {
-      warnings.push(
-        `${scopeLabel}: command name "${commandName}" is not a valid Discord slash command name (must match ${DISCORD_NAME_RE}); skipping`,
-      );
-      continue;
-    }
+    const commandName = skills ? file : file.slice(0, -3);
+    const sourcePath = skills
+      ? path.join(commandsDir, file, "SKILL.md")
+      : path.join(commandsDir, file);
+    if (skills && !fs.existsSync(sourcePath)) continue;
 
-    const sourcePath = path.join(commandsDir, file);
     let body: string;
     try {
       body = fs.readFileSync(sourcePath, "utf8");
@@ -150,9 +156,17 @@ function scanCommandsDir(
       continue;
     }
 
-    if (!fm.discordVisible) {
-      // Honor `discord-visible: false` — command still works via Claude CLI
+    if (skills ? fm.discordVisible !== true : fm.discordVisible === false) {
+      // Honor `discord-visible` — the command/skill still works via Claude CLI
       // but is intentionally not registered as a Discord slash command.
+      continue;
+    }
+
+    // Checked after visibility so hidden skills with long names stay quiet.
+    if (!DISCORD_NAME_RE.test(commandName)) {
+      warnings.push(
+        `${scopeLabel}: command name "${commandName}" is not a valid Discord slash command name (must match ${DISCORD_NAME_RE}); skipping`,
+      );
       continue;
     }
 
@@ -269,6 +283,27 @@ export async function scanUserCommands(
 }
 
 /**
+ * Scan user-scope skills at `~/.claude/skills/<name>/SKILL.md` that opt in
+ * with `discord-visible: true`. Claude Code exposes skills as `/<name>` just
+ * like user commands, so they reuse `scope: "user"` and the bare-name prompt.
+ */
+export async function scanUserSkills(
+  opts: DiscoveryOptions = {},
+): Promise<DiscoveryResult> {
+  const home = opts.homeDir ?? os.homedir();
+  const warnings: string[] = [];
+  const commands = scanCommandsDir(
+    path.join(home, ".claude", "skills"),
+    "user",
+    "User skills",
+    () => ({ pluginName: "<user>", pluginShortName: "", pluginInstallPath: "" }),
+    warnings,
+    true,
+  );
+  return { commands, warnings };
+}
+
+/**
  * Aggregate discovery across plugin + user + project scopes.
  *
  * Scan order matters: it determines which entry wins when the same command
@@ -296,6 +331,10 @@ export async function scanAllCommandSources(opts: {
   const user = await scanUserCommands({ homeDir: opts.homeDir });
   commands.push(...user.commands);
   warnings.push(...user.warnings);
+
+  const skills = await scanUserSkills({ homeDir: opts.homeDir });
+  commands.push(...skills.commands);
+  warnings.push(...skills.warnings);
 
   // Deduplicate project paths — the bot may have the same project registered
   // under multiple Discord channels; we only need to scan its commands once.

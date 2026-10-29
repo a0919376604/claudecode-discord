@@ -2,6 +2,43 @@ import { describe, it, expect } from "vitest";
 import { notificationToEvent } from "./codex-translate.js";
 
 describe("notificationToEvent", () => {
+  it("accepts real plan steps but ignores malformed progress", () => {
+    const plan = [{ step: "Inspect", status: "completed" }, { step: "Build", status: "inProgress" }];
+    expect(notificationToEvent({ method: "turn/plan/updated", params: { plan } })).toEqual({ type: "plan_update", steps: plan });
+    expect(notificationToEvent({ method: "turn/plan/updated", params: { plan: [{ step: "Guess", status: "unknown" }] } })).toBeNull();
+  });
+  it("updates the reported model when Codex reroutes a turn", () => {
+    expect(notificationToEvent({ method: "model/rerouted", params: {
+      threadId: "codex-1", toModel: "effective-model", fromModel: "requested-model",
+    } })).toEqual({ type: "session_init", sessionId: "codex-1", model: "effective-model" });
+  });
+  it.each(["webSearch", "imageGeneration", "dynamicToolCall", "collabAgentToolCall"])("surfaces %s tool activity", (type) => {
+    expect(notificationToEvent({ method: "item/started", params: { item: { type, id: "tool-1" } } }))
+      .toMatchObject({ type: "tool_start" });
+  });
+
+  it.each(["completed", "failed", "declined"])("reports command completion status %s", (status) => {
+    expect(notificationToEvent({ method: "item/completed", params: { item: {
+      type: "commandExecution", id: "tool-1", command: "npm test", status,
+    } } })).toMatchObject({ type: "tool_end", toolName: "Bash", ok: status === "completed" });
+  });
+
+  it("reports a nonzero command exit as a failed tool", () => {
+    expect(notificationToEvent({ method: "item/completed", params: { item: {
+      type: "commandExecution", status: "completed", exitCode: 1,
+    } } })).toMatchObject({ type: "tool_end", ok: false });
+  });
+  it("shows failures from the v2 turn envelope instead of reporting success", () => {
+    expect(notificationToEvent({ method: "turn/completed", params: {
+      turn: { id: "turn-1", status: "failed", error: { message: "Usage limit exceeded", codexErrorInfo: "UsageLimitExceeded" } },
+    } })).toEqual({ type: "result", text: "Usage limit exceeded", isError: true });
+  });
+
+  it.each([["commandExecution", "Bash"], ["fileChange", "Write"], ["mcpToolCall", "MCP"]])("shows progress for v2 %s tools", (type, toolName) => {
+    expect(notificationToEvent({ method: "item/started", params: { item: { id: "item-1", type } } }))
+      .toEqual({ type: "tool_start", toolName, input: { id: "item-1" } });
+  });
+
   it("translates agentMessage/delta to text_delta", () => {
     const n = { method: "item/agentMessage/delta", params: { delta: "hello" } };
     expect(notificationToEvent(n)).toEqual({ type: "text_delta", text: "hello" });

@@ -16,6 +16,7 @@ interface SessionInfo {
   firstMessage: string;
   timestamp: string;
   fileSize: number;
+  filePath: string;
 }
 
 /**
@@ -71,12 +72,14 @@ export async function getLastAssistantMessage(filePath: string): Promise<string>
   for await (const line of rl) {
     try {
       const entry = JSON.parse(line);
-      if (entry.type === "assistant" && entry.message?.content) {
-        const content = entry.message.content;
+      const content = entry.type === "assistant" ? entry.message?.content
+        : entry.type === "response_item" && entry.payload?.role === "assistant"
+          ? entry.payload.content : null;
+      if (content) {
         let raw = "";
         if (Array.isArray(content)) {
           for (const block of content) {
-            if (block.type === "text" && block.text) {
+            if ((block.type === "text" || block.type === "output_text") && block.text) {
               raw += block.text;
             }
           }
@@ -114,12 +117,14 @@ export async function getLastAssistantMessageFull(filePath: string): Promise<str
   for await (const line of rl) {
     try {
       const entry = JSON.parse(line);
-      if (entry.type === "assistant" && entry.message?.content) {
-        const content = entry.message.content;
+      const content = entry.type === "assistant" ? entry.message?.content
+        : entry.type === "response_item" && entry.payload?.role === "assistant"
+          ? entry.payload.content : null;
+      if (content) {
         let raw = "";
         if (Array.isArray(content)) {
           for (const block of content) {
-            if (block.type === "text" && block.text) {
+            if ((block.type === "text" || block.type === "output_text") && block.text) {
               raw += block.text;
             }
           }
@@ -220,6 +225,7 @@ async function listSessions(projectPath: string): Promise<SessionInfo[]> {
       firstMessage: text.slice(0, 80),
       timestamp: stat.mtime.toISOString(),
       fileSize: stat.size,
+      filePath,
     });
   }
 
@@ -229,9 +235,82 @@ async function listSessions(projectPath: string): Promise<SessionInfo[]> {
   return sessions;
 }
 
+/** Codex rollouts are nested by date, with project and thread ID in session_meta. */
+function* codexFiles(dir = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions")): Generator<string> {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) yield* codexFiles(file);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl")) yield file;
+  }
+}
+
+async function readCodexSession(filePath: string, projectPath: string): Promise<SessionInfo | null> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let sessionId = "";
+  try {
+    for await (const line of rl) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      // Forked rollouts can include their ancestor's metadata after their own.
+      // Only the first metadata identifies this file's thread and project.
+      if (entry.type === "session_meta" && !sessionId) {
+        if (typeof entry.payload?.cwd !== "string" ||
+            path.resolve(entry.payload.cwd) !== path.resolve(projectPath)) return null;
+        sessionId = entry.payload.id;
+      }
+      if (!sessionId) continue;
+      const payload = entry.payload;
+      let text = "";
+      if (entry.type === "event_msg" && payload?.type === "user_message") {
+        text = typeof payload.message === "string" ? payload.message : "";
+      } else if (entry.type === "response_item" && payload?.role === "user" && Array.isArray(payload.content)) {
+        text = payload.content.filter((block: { type: string; text?: string }) => block.type === "input_text")
+          .map((block: { text?: string }) => block.text ?? "").join("\n");
+      }
+      // These are injected context messages, not the user's conversation title.
+      text = text.replace(/<(environment_context|user_instructions|permissions instructions)>[\s\S]*?<\/\1>/g, "").trim();
+      if (!text || text.startsWith("# AGENTS.md instructions")) continue;
+      const stat = fs.statSync(filePath);
+      return { sessionId, firstMessage: text.slice(0, 80), timestamp: stat.mtime.toISOString(), fileSize: stat.size, filePath };
+    }
+  } catch {
+    // Ignore unreadable or concurrently removed rollouts.
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return null;
+}
+
+async function listCodexSessions(projectPath: string): Promise<SessionInfo[]> {
+  const sessions: SessionInfo[] = [];
+  for (const file of codexFiles()) {
+    const session = await readCodexSession(file, projectPath);
+    if (session) sessions.push(session);
+  }
+  return sessions.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+}
+
+/** Resolve within this provider and project; never build a path from an interaction ID. */
+export async function findSessionFile(projectPath: string, sessionId: string, backend: "claude" | "codex" = "claude"): Promise<string | null> {
+  if (backend === "codex") {
+    for (const file of codexFiles()) {
+      const session = await readCodexSession(file, projectPath);
+      if (session?.sessionId === sessionId) return file;
+    }
+    return null;
+  }
+  const dir = findSessionDir(projectPath);
+  if (!dir || path.basename(sessionId) !== sessionId || /[\\/]/.test(sessionId)) return null;
+  const file = path.join(dir, `${sessionId}.jsonl`);
+  return fs.existsSync(file) ? file : null;
+}
+
 export const data = new SlashCommandBuilder()
   .setName("sessions")
-  .setDescription("List and resume existing Claude Code sessions for this project");
+  .setDescription("List and resume sessions for this project’s current backend");
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
@@ -246,7 +325,7 @@ export async function execute(
     return;
   }
 
-  const sessions = await listSessions(project.project_path);
+  const sessions = await (project.backend === "codex" ? listCodexSessions : listSessions)(project.project_path);
 
   if (sessions.length === 0) {
     const { randomUUID } = await import("node:crypto");
@@ -312,7 +391,7 @@ export async function execute(
   options.push(...sessionOptions);
 
   const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId("session-select")
+    .setCustomId(`session-select:${project.backend ?? "claude"}`)
     .setPlaceholder(L("Select a session to resume...", "재개할 세션을 선택하세요..."))
     .addOptions(options);
 
@@ -321,7 +400,7 @@ export async function execute(
   await interaction.editReply({
     embeds: [
       {
-        title: L("Claude Code Sessions", "Claude Code 세션"),
+        title: project.backend === "codex" ? L("Codex Sessions", "Codex 세션") : L("Claude Code Sessions", "Claude Code 세션"),
         description: [
           `Project: \`${project.project_path}\``,
           L(`Found **${sessions.length}** session(s)`, `**${sessions.length}**개의 세션을 찾았습니다`),

@@ -9,6 +9,7 @@ export interface Project {
   backend: "claude" | "codex";
   last_model?: string | null; // last Claude model seen in this channel
   model?: string | null; // /model override; NULL = CLAUDE_MODEL / SDK default
+  codex_model?: string | null; // independent Codex override; NULL = Codex config
   effort?: string | null; // /effort override; NULL = model default
   created_at: string;
 }

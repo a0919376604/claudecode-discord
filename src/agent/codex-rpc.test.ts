@@ -156,6 +156,62 @@ describe("CodexRpc.request", () => {
 });
 
 describe("CodexRpc bidirectional", () => {
+  it("does not confuse a server request with an outstanding client request with the same id", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    rpc.onRequest("approve", async () => ({ decision: "decline" }));
+    const pending = rpc.request("ping");
+    server.push(encodeFrame({ id: 1, method: "approve", params: {} }));
+    server.push(encodeFrame({ id: 1, result: "pong" }));
+    await expect(pending).resolves.toBe("pong");
+    rpc.close();
+  });
+
+  it("responds to server requests with string ids", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    rpc.onRequest("approve", async () => ({ decision: "decline" }));
+    const response = new Promise<object>((resolve) => {
+      server.once("data", (chunk: Buffer) => resolve(JSON.parse(chunk.toString())));
+    });
+    server.push(encodeFrame({ id: "approval-1", method: "approve", params: {} }));
+    await expect(response).resolves.toMatchObject({ id: "approval-1", result: { decision: "decline" } });
+    rpc.close();
+  }, 300);
+
+  it.each(["end", "close", "error"])("rejects future requests and wakes notification consumers on transport %s", async (event) => {
+    const { client } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    const waiting = rpc.notifications().next();
+    // Attach a rejection handler before delivering the transport failure.
+    const outcome = waiting.catch((err: Error) => err);
+    if (event === "error") client.emit(event, new Error("broken pipe"));
+    else client.emit(event);
+    await expect(outcome).resolves.toBeInstanceOf(Error);
+    await expect(rpc.request("ping")).rejects.toThrow();
+    rpc.close();
+  }, 300);
+
+  it("does not write a late approval response after intentional shutdown", async () => {
+    const { client, server } = makeStreamPair();
+    const rpc = new CodexRpc(client);
+    let approve!: (value: unknown) => void;
+    const started = new Promise<void>((resolve) => {
+      rpc.onRequest("approve", () => {
+        resolve();
+        return new Promise((done) => { approve = done; });
+      });
+    });
+    const writes: Buffer[] = [];
+    server.on("data", (chunk: Buffer) => writes.push(chunk));
+    server.push(encodeFrame({ id: 99, method: "approve" }));
+    await started;
+    rpc.close();
+    approve({ decision: "decline" });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(writes).toEqual([]);
+  });
+
   it("dispatches server notifications to registered handler", async () => {
     const { client, server } = makeStreamPair();
     const rpc = new CodexRpc(client);

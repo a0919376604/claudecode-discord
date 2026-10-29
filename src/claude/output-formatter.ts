@@ -268,12 +268,13 @@ export function createResultEmbed(
   showCost: boolean = true,
   isError: boolean = false,
   model?: string,
+  toolUseCount?: number,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
   const base = showCost && costUsd !== undefined
     ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}  |  ${L("Duration", "소요 시간")} : ${duration}`
     : `${L("Duration", "소요 시간")} : ${duration}`;
-  const footer = model ? `${base}  |  ${model}` : base;
+  const footer = [base, model, toolUseCount ? `${toolUseCount} ${L("tools used", "개 도구 사용")}` : ""].filter(Boolean).join("  |  ");
 
   // Error results (SDKResultError: error_during_execution / error_max_turns
   // / error_max_budget_usd / error_max_structured_output_retries) come

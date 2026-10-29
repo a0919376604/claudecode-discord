@@ -37,6 +37,7 @@ export class CodexRpc {
   private pending = new Map<number, PendingResolver>();
   private decoder = new FrameDecoder();
   private closed = false;
+  private failure: Error | null = null;
 
   private notificationHandlers = new Map<string, (params: unknown) => void>();
   private requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
@@ -45,23 +46,24 @@ export class CodexRpc {
 
   constructor(private stream: Duplex) {
     stream.on("data", (chunk: Buffer) => this.onData(chunk));
-    stream.on("error", (err: Error) => this.rejectAll(err));
-    stream.on("close", () => this.rejectAll(new Error("Stream closed")));
+    stream.on("error", (err: Error) => this.shutdown(err));
+    stream.on("end", () => this.shutdown(new Error("Codex app-server disconnected")));
+    stream.on("close", () => this.shutdown(new Error("Codex app-server stream closed")));
   }
 
   request(method: string, params?: unknown): Promise<unknown> {
-    if (this.closed) return Promise.reject(new Error("RPC closed"));
+    if (this.closed) return Promise.reject(this.failure ?? new Error("RPC closed"));
     const id = this.nextId++;
     const promise = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    this.stream.write(encodeFrame({ jsonrpc: "2.0", id, method, params }));
+    this.write({ jsonrpc: "2.0", id, method, params });
     return promise;
   }
 
   notify(method: string, params?: unknown): void {
     if (this.closed) return;
-    this.stream.write(encodeFrame({ jsonrpc: "2.0", method, params }));
+    this.write({ jsonrpc: "2.0", method, params });
   }
 
   onNotification(method: string, handler: (params: unknown) => void): void {
@@ -78,20 +80,39 @@ export class CodexRpc {
         yield this.notifQueue.shift()!;
         continue;
       }
-      if (this.closed) return;
+      if (this.closed) break;
       await new Promise<void>((resolve) => { this.notifResolver = resolve; });
     }
+    if (this.failure) throw this.failure;
   }
 
   close(): void {
+    if (this.closed) return;
+    this.shutdown();
+    this.stream.end();
+  }
+
+  private shutdown(error?: Error): void {
+    if (this.closed) return;
     this.closed = true;
-    this.rejectAll(new Error("RPC closed"));
+    this.failure = error ?? null;
+    this.rejectAll(error ?? new Error("RPC closed"));
     if (this.notifResolver) {
       const r = this.notifResolver;
       this.notifResolver = null;
       r();
     }
-    this.stream.end();
+  }
+
+  private write(payload: object): void {
+    if (this.closed) return;
+    try {
+      this.stream.write(encodeFrame(payload), (error) => {
+        if (error) this.shutdown(error);
+      });
+    } catch (error) {
+      this.shutdown(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private onData(chunk: Buffer): void {
@@ -99,7 +120,7 @@ export class CodexRpc {
     try {
       messages = this.decoder.push(chunk);
     } catch (e) {
-      this.rejectAll(e instanceof Error ? e : new Error(String(e)));
+      this.shutdown(e instanceof Error ? e : new Error(String(e)));
       return;
     }
     for (const msg of messages) this.dispatch(msg);
@@ -107,7 +128,7 @@ export class CodexRpc {
 
   protected dispatch(msg: object): void {
     const m = msg as {
-      id?: number;
+      id?: number | string;
       method?: string;
       params?: unknown;
       result?: unknown;
@@ -115,7 +136,7 @@ export class CodexRpc {
     };
 
     // Response to our request (has id that matches a pending entry, no method field for a pure response)
-    if (typeof m.id === "number" && this.pending.has(m.id)) {
+    if (m.method === undefined && typeof m.id === "number" && this.pending.has(m.id)) {
       const pending = this.pending.get(m.id)!;
       this.pending.delete(m.id);
       if (m.error) pending.reject(new Error(m.error.message ?? "RPC error"));
@@ -124,21 +145,21 @@ export class CodexRpc {
     }
 
     // Server → client request (has id + method, not in our pending map)
-    if (typeof m.id === "number" && typeof m.method === "string") {
+    if ((typeof m.id === "number" || typeof m.id === "string") && typeof m.method === "string") {
       const handler = this.requestHandlers.get(m.method);
       if (!handler) {
-        this.stream.write(encodeFrame({
+        this.write({
           jsonrpc: "2.0", id: m.id,
           error: { code: -32601, message: `Method not found: ${m.method}` },
-        }));
+        });
         return;
       }
-      handler(m.params)
-        .then((result) => this.stream.write(encodeFrame({ jsonrpc: "2.0", id: m.id, result })))
-        .catch((err: unknown) => this.stream.write(encodeFrame({
+      Promise.resolve().then(() => handler(m.params))
+        .then((result) => this.write({ jsonrpc: "2.0", id: m.id, result }))
+        .catch((err: unknown) => this.write({
           jsonrpc: "2.0", id: m.id,
           error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
-        })));
+        }));
       return;
     }
 

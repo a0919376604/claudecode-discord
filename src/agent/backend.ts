@@ -2,10 +2,11 @@ import type { TextChannel } from "discord.js";
 import type { AskQuestionData } from "../claude/output-formatter.js";
 
 export type NormalizedEvent =
+  | { type: "plan_update"; steps: Array<{ step: string; status: "pending" | "inProgress" | "completed" }> }
   | { type: "session_init"; sessionId: string; model?: string }
   | { type: "text_delta"; text: string; isReasoning?: boolean }
   | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
-  | { type: "tool_end"; toolName: string; ok: boolean }
+  | { type: "tool_end"; toolName: string; ok: boolean; input?: Record<string, unknown> }
   // Full set of live background tasks (REPLACE semantics).
   | { type: "background_tasks"; tasks: { id: string; description: string; taskType: string }[] }
   | { type: "task_progress"; id: string; summary?: string; lastTool?: string; toolUses?: number }

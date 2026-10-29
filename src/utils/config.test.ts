@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// These tests exercise environment validation; config-env.test.ts verifies
+// real .env loading in a fresh process without the developer's credentials.
+vi.mock("dotenv/config", () => ({}));
+
 describe("config", () => {
   const originalEnv = { ...process.env };
 

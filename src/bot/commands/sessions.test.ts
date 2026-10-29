@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
+  execute,
+  findSessionFile,
   findSessionDir,
   getLastAssistantMessage,
   getLastAssistantMessageFull,
@@ -12,6 +14,7 @@ import {
 vi.mock("../../db/database.js", () => ({
   getProject: vi.fn(),
   getSession: vi.fn(),
+  upsertSession: vi.fn(),
 }));
 
 // ─── findSessionDir ───
@@ -164,5 +167,112 @@ describe("getLastAssistantMessageFull", () => {
     const filePath = path.join(tmpDir, "test.jsonl");
     fs.writeFileSync(filePath, JSON.stringify({ type: "user", message: { content: "hi" } }));
     expect(await getLastAssistantMessageFull(filePath)).toBe("(no message)");
+  });
+});
+
+// Real JSONL fixtures catch provider mixing, wrong project matching, and rollout IDs.
+import { getProject, getSession } from "../../db/database.js";
+import type { ChatInputCommandInteraction } from "discord.js";
+
+describe("provider-aware sessions", () => {
+  let home: string;
+  const id = "019abc00-0000-7000-8000-000000000001";
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "provider-sessions-"));
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    vi.stubEnv("CODEX_HOME", path.join(home, "custom-codex"));
+    vi.mocked(getSession).mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  function codexFile(sessionId: string, cwd = "/my/project") {
+    const dir = path.join(process.env.CODEX_HOME!, "sessions", "2026", "10", "28");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `rollout-2026-10-28T00-00-00-${sessionId}.jsonl`);
+    fs.writeFileSync(file, [
+      { type: "session_meta", payload: { id: sessionId, cwd, timestamp: "2026-10-28T00:00:00Z" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>injected context</environment_context>" }] } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the Codex bug" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Codex answer\nAll fixed" }] } },
+    ].map(e => JSON.stringify(e)).join("\n"));
+    return file;
+  }
+
+  function claudeFile() {
+    const dir = path.join(home, ".claude", "projects", "-my-project");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "claude-session.jsonl"), JSON.stringify({
+      type: "user", message: { content: "Claude task " + "x".repeat(600) },
+    }));
+  }
+
+  async function run(backend: "claude" | "codex") {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "ch1", project_path: "/my/project", backend,
+      guild_id: "g", auto_approve: 0, source_path: null, created_at: "",
+    });
+    const editReply = vi.fn();
+    await execute({ channelId: "ch1", editReply } as unknown as ChatInputCommandInteraction);
+    return editReply.mock.calls[0][0];
+  }
+
+  it("lists only Codex sessions from this project and marks the active thread", async () => {
+    codexFile(id);
+    codexFile("other-project", "/other/project");
+    claudeFile();
+    vi.mocked(getSession).mockReturnValue({ session_id: id } as ReturnType<typeof getSession>);
+    const reply = await run("codex");
+    expect(reply.embeds[0].title).toContain("Codex");
+    const options = reply.components[0].toJSON().components[0].options;
+    expect(options.map((o: { value: string }) => o.value)).toEqual(["__new_session__", id]);
+    expect(options[1].label).toContain("Fix the Codex bug");
+    expect(options[1].default).toBe(true);
+  });
+
+  it("keeps Claude sessions separate after switching back", async () => {
+    codexFile(id);
+    claudeFile();
+    const reply = await run("claude");
+    const options = reply.components[0].toJSON().components[0].options;
+    expect(options.map((o: { value: string }) => o.value)).toEqual(["__new_session__", "claude-session"]);
+  });
+
+  it.each(["/my/project", "/other/project"])("uses the rollout's own metadata when inherited metadata has cwd %s", async (inheritedCwd) => {
+    const parentId = "019abc00-0000-7000-8000-000000000002";
+    codexFile(parentId);
+    const file = codexFile(id);
+    const lines = fs.readFileSync(file, "utf-8").split("\n");
+    lines.splice(1, 0, JSON.stringify({
+      type: "session_meta", payload: { id: parentId, cwd: inheritedCwd },
+    }));
+    fs.writeFileSync(file, lines.join("\n"));
+    vi.mocked(getSession).mockReturnValue({ session_id: id } as ReturnType<typeof getSession>);
+
+    const reply = await run("codex");
+    const options = reply.components[0].toJSON().components[0].options;
+    expect(options.map((o: { value: string }) => o.value).sort()).toEqual([
+      id, parentId, "__new_session__",
+    ].sort());
+    expect(options.find((o: { value: string }) => o.value === id)?.default).toBe(true);
+    expect(await findSessionFile("/my/project", id, "codex")).toBe(file);
+  });
+
+  it("resolves Codex rollout files by metadata for previews and deletion", async () => {
+    const file = codexFile(id);
+    expect(await findSessionFile("/my/project", id, "codex")).toBe(file);
+    expect(await findSessionFile("/other/project", id, "codex")).toBeNull();
+    expect(await getLastAssistantMessage(file)).toBe("All fixed");
+  });
+
+  it("shows a fresh Codex session when its storage is absent", async () => {
+    claudeFile();
+    const reply = await run("codex");
+    expect(reply.embeds[0].title).toContain("New Session");
   });
 });

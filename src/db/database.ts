@@ -114,6 +114,9 @@ export function initDatabase(): void {
   if (!cols.some((c) => c.name === "effort")) {
     db.exec("ALTER TABLE projects ADD COLUMN effort TEXT");
   }
+  if (!cols.some((c) => c.name === "codex_model")) {
+    db.exec("ALTER TABLE projects ADD COLUMN codex_model TEXT");
+  }
 }
 
 export function getDb(): Database.Database {
@@ -205,7 +208,7 @@ export function setLastModel(channelId: string, model: string): void {
 /** Set a per-channel /model or /effort override; null resets to default. */
 export function setChannelOverride(
   channelId: string,
-  key: "model" | "effort",
+  key: "model" | "effort" | "codex_model",
   value: string | null,
 ): void {
   db.prepare(`UPDATE projects SET ${key} = ? WHERE channel_id = ?`).run(

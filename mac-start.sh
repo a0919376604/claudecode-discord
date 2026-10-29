@@ -66,6 +66,31 @@ if [ "$1" = "--fg" ]; then
         exit 1
     fi
 
+    # Homebrew can upgrade a library node links against (e.g. simdjson) without
+    # upgrading node itself; node then aborts in dyld before running any JS.
+    # Upgrading the formula (or reinstalling it, if already latest) relinks it.
+    if ! node --version &>/dev/null; then
+        NODE_REAL=$(readlink -f "$(command -v node)" 2>/dev/null)
+        NODE_FORMULA=$(echo "$NODE_REAL" | sed -n 's#.*/Cellar/\([^/]*\)/.*#\1#p')
+        BREW="${NODE_REAL%%/Cellar/*}/bin/brew"
+        if [ -n "$NODE_FORMULA" ] && [ -x "$BREW" ]; then
+            echo "[claude-bot] node fails to start (Homebrew library changed), running: brew upgrade $NODE_FORMULA"
+            "$BREW" upgrade "$NODE_FORMULA"
+            hash -r
+            if ! node --version &>/dev/null; then
+                echo "[claude-bot] node still fails, running: brew reinstall $NODE_FORMULA"
+                "$BREW" reinstall "$NODE_FORMULA"
+                hash -r
+            fi
+        fi
+        if ! node --version &>/dev/null; then
+            echo "[claude-bot] ERROR: $(command -v node) fails to start:"
+            node --version 2>&1 | head -3
+            echo "[claude-bot] Reinstall Node.js (e.g. brew reinstall node), then restart the bot."
+            exit 1
+        fi
+    fi
+
     echo "[claude-bot] Using node: $(which node) ($(node --version))"
     cd "$SCRIPT_DIR"
 

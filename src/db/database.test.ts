@@ -36,6 +36,14 @@ describe("database", () => {
   // ─── Project CRUD ───
 
   describe("project CRUD", () => {
+    it("persists an independent Codex model without modifying Claude preferences", () => {
+      registerProject("ch1", "/project", "guild1");
+      setChannelOverride("ch1", "model", "opus");
+      setChannelOverride("ch1", "codex_model", "gpt-6.1-sol");
+      expect(getProject("ch1")).toMatchObject({ model: "opus", codex_model: "gpt-6.1-sol" });
+      setChannelOverride("ch1", "codex_model", null);
+      expect(getProject("ch1")).toMatchObject({ model: "opus", codex_model: null });
+    });
     it("registerProject + getProject", () => {
       registerProject("ch1", "/path/to/project", "guild1");
       const project = getProject("ch1");
