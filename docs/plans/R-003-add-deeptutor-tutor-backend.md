@@ -129,7 +129,7 @@
   - Spawn `error` event with `code === "ENOENT"` → `result{isError:true, text:"DeepTutor CLI not found (DEEPTUTOR_BIN=<bin>)."}`.
   - `interrupt()`: kill child (`SIGTERM`). `respondToApproval`/`respondToQuestion`: no-op. `isResumeStaleError`: `false`. `getAuthErrorHint(err)`: if message matches `/not found \(DEEPTUTOR_BIN|ENOENT/` → install hint mentioning `pip install -e .` in the DeepTutor checkout; if matches `/api key|provider|llm/i` → hint to configure the DeepTutor LLM provider; else `null`.
 
-- [ ] **Step 1: Write failing tests** in `src/agent/deeptutor-backend.test.ts` — mock `node:child_process` `spawn` (pattern: `src/agent/codex-backend-lifecycle.test.ts` with `PassThrough` stdout/stderr and an `EventEmitter` proc), mock `../db/tutors.js` (`getTutor`, `setTutorSession`), mock `../utils/config.js` `getConfig` → `{ DEEPTUTOR_BIN: "deeptutor" }`. Tests:
+- [x] **Step 1: Write failing tests** in `src/agent/deeptutor-backend.test.ts` — mock `node:child_process` `spawn` (pattern: `src/agent/codex-backend-lifecycle.test.ts` with `PassThrough` stdout/stderr and an `EventEmitter` proc), mock `../db/tutors.js` (`getTutor`, `setTutorSession`), mock `../utils/config.js` `getConfig` → `{ DEEPTUTOR_BIN: "deeptutor" }`. Tests:
   - `first run omits --session and stores the new session id`: tutor with `deeptutor_session_id:null`; stdout lines `{"type":"session","metadata":{"session_id":"s9"},"session_id":"s9"}`, `{"type":"content","content":"Hello","session_id":"s9"}`, `{"type":"done","session_id":"s9"}` → spawn args don't include `--session`; events `[session_init s9, text_delta Hello, result ok]`; `setTutorSession("ch","s9")` called once.
   - `resumes with stored session id and ignores opts.resumeSessionId`: tutor id `s1`, `opts.resumeSessionId:"other"` → args contain `["--session","s1"]`.
   - `noisy stdout`: a non-JSON line and a JSON line split across two `write`s → still yields the content event.
@@ -138,10 +138,10 @@
   - `no tutor row` → single error result mentioning `/tutor setup`, spawn not called.
   - `only one result even if both result and done arrive`.
   - `duplicate question card text is yielded once` (same card on a `tool_result` and a later `content` event).
-- [ ] **Step 2:** `npx vitest run src/agent/deeptutor-backend.test.ts` → FAIL.
-- [ ] **Step 3:** Implement; wire factory and config.
-- [ ] **Step 4:** `npx vitest run src/agent/deeptutor-backend.test.ts src/utils/config.test.ts src/utils/config-env.test.ts && npx tsc --noEmit` → PASS.
-- [ ] **Step 5:** Commit `feat(R-003): DeepTutor agent backend`.
+- [x] **Step 2:** `npx vitest run src/agent/deeptutor-backend.test.ts` → FAIL.
+- [x] **Step 3:** Implement; wire factory and config.
+- [x] **Step 4:** `npx vitest run src/agent/deeptutor-backend.test.ts src/utils/config.test.ts src/utils/config-env.test.ts && npx tsc --noEmit` → PASS.
+- [x] **Step 5:** Commit `feat(R-003): DeepTutor agent backend`.
 
 ### Task 4: Session-manager & switch-backend awareness of `deeptutor`
 
