@@ -129,6 +129,14 @@ describe("/tutor", () => {
     expect(setTutorSession).toHaveBeenCalledWith("ch", null);
     expect(clearSessionId).not.toHaveBeenCalled();
   });
+  it("reset refuses an active turn so a late session event cannot undo it", async () => {
+    storedTutor = { ...configuredTutor, deeptutor_session_id: null };
+    vi.mocked(sessionManager.isActive).mockReturnValue(true);
+    const inter = interaction("reset");
+    await execute(inter);
+    expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("/stop") }));
+    expect(setTutorSession).not.toHaveBeenCalled();
+  });
   it("show displays config and next fire times", async () => {
     storedTutor = { ...configuredTutor, level: "B1", deadline: "2027-01-01", daily_minutes: 20, menu: "grammar" };
     crons = [cron("d", "tutor:daily"), cron("w", "tutor:weekly")];

@@ -470,9 +470,10 @@ class SessionManager {
                   responseBuffer = "";
                   bufferFinalized = true;
                 }
-                // Claude emits complete text blocks; Codex emits incremental tokens.
-                // Only complete blocks need a paragraph separator.
-                const separator = project.backend !== "codex" && responseBuffer.length > 0 ? "\n\n" : "";
+                // Claude emits complete blocks; Codex and DeepTutor stream tokens.
+                // Synthetic DeepTutor question cards also start a new paragraph.
+                const newParagraph = project.backend === "claude" || (project.backend === "deeptutor" && event.text.startsWith("📝 "));
+                const separator = newParagraph && responseBuffer.length > 0 ? "\n\n" : "";
                 responseBuffer += separator + event.text;
                 hasTextOutput = true;
                 const now = Date.now();

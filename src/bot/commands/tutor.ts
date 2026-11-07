@@ -117,6 +117,10 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === "show") {
     await interaction.editReply({ embeds: [tutorEmbed(tutor, listCronsByChannel(channelId).filter(isTutorCron))] });
   } else if (sub === "reset") {
+    if (sessionManager.isActive(channelId)) {
+      await interaction.editReply({ content: L("❌ A session is running. Use /stop first.", "❌ 세션이 실행 중입니다. 먼저 /stop을 사용하세요.") });
+      return;
+    }
     setTutorSession(channelId, null);
     await interaction.editReply({ content: L("✅ Tutor reset. Your next message starts a new learning path.", "✅ 튜터가 초기화되었습니다. 다음 메시지에서 새 학습 경로를 시작합니다.") });
   }

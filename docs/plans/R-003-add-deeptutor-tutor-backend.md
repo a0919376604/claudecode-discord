@@ -235,3 +235,15 @@
 Deviation: Task 1 widened findSessionFile’s backend parameter to BackendName — TypeScript rejected both existing interaction.ts callers after Project.backend gained deeptutor; this only updates the backend type allow-list and leaves existing lookup behavior unchanged.
 
 Tasks 1–6 verified in order and committed individually. Task 6 checks: 13 command tests passed; npx tsc --noEmit passed; full suite 711 passed, 1 pre-existing opt-in Codex e2e test skipped.
+
+Deviation: Review repair restricted stream paragraph separators to Claude blocks and synthetic DeepTutor cards — the plan missed the same backend-dependent formatting guard in session-manager.ts; an integration regression reproduced inserted blank lines inside DeepTutor token streams. Consecutive tokens now join unchanged while question cards remain separate.
+
+Deviation: Review repair rejects /tutor reset during an active turn with the existing /stop guidance — a first-run CLI session event can otherwise arrive after reset and restore the pre-reset learning-path id. This is a local command guard preserving the promised fresh path after an acknowledged reset.
+
+Review repair validation: both regressions observed RED then GREEN; 57 scoped tests passed, npx tsc --noEmit passed, full suite 713 passed and 1 existing opt-in e2e skipped. A separate repair commit preserves all six original task commits without amendment.
+
+Deferred minor: the Korean missing-binary error text does not match getAuthErrorHint's prescribed English pattern, so Korean users see the missing-CLI error without the pip installation hint. Independently reproduced against the actual transpiled backend; English behavior and missing-binary termination pass.
+
+Review boundaries retained: DST offset remains frozen at setup (accepted potential 1-hour seasonal drift); CLI approval/ask_user limitations and independent tutor sessions remain as decided; immediate child termination at a terminal event follows the plan. Tests mock CLI/Discord/provider boundaries; no live provider or Discord execution was performed.
+
+Final status: DONE_WITH_CONCERNS — three documented local deviations and the deferred Korean installation-hint minor. No dependency changes, no cron/parser.ts changes, no push.

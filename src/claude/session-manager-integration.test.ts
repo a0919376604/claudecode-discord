@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getProject } from "../db/database.js";
 import { notificationToEvent } from "../agent/codex-translate.js";
+import { translateDeepTutorEvent } from "../agent/deeptutor-translate.js";
 import { MockAgentBackend } from "../agent/mock-backend.js";
 
 // ─── Module mocks (hoisted by vitest) ───────────────────────────────────────
@@ -143,6 +144,23 @@ describe("SessionManager with MockAgentBackend", () => {
     const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
     expect(messages[1].content).toBe("修好了，這是正常排版。\n第二行");
     expect(messages[0].content).toBe("");
+  });
+
+  it("renders DeepTutor token deltas as prose followed by a separate question card", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "deeptutor" });
+    const channel = makeMockChannel();
+    for (const content of ["Hel", "lo", " world"]) {
+      for (const event of translateDeepTutorEvent({ type: "content", content })) testBackend.enqueueEvent(event);
+    }
+    for (const event of translateDeepTutorEvent({
+      type: "tool_result", metadata: { tool: "mastery_quiz", tool_metadata: { mastery_question: { prompt: "Pick", options: [{ label: "A", body: "large" }] } } },
+    })) testBackend.enqueueEvent(event);
+    testBackend.enqueueEvent({ type: "result", text: "", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "daily push");
+    const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
+    expect(messages.map(m => m.content).filter(Boolean).join("")).toBe("Hello world\n\n📝 Pick\nA. large\n↩️ 直接在頻道回覆你的答案");
   });
 
   it("shows the effective Codex model in progress and the result footer", async () => {
