@@ -61,15 +61,15 @@
   ```
 - Table: `tutors(channel_id TEXT PRIMARY KEY REFERENCES projects(channel_id) ON DELETE CASCADE, subject TEXT NOT NULL, goal TEXT NOT NULL, level TEXT, deadline TEXT, daily_minutes INTEGER, menu TEXT, push_time TEXT NOT NULL, timezone TEXT NOT NULL, language TEXT NOT NULL, deeptutor_session_id TEXT, created_at INTEGER NOT NULL)`.
 
-- [ ] **Step 1: Write failing tests** in `src/db/tutors.test.ts` using an in-memory DB that has a `projects` table with row `ch1` (copy the `:memory:` + `__setDbForTests` setup style of `src/db/crons.test.ts`; create the `tutors` table with the exact DDL above):
+- [x] **Step 1: Write failing tests** in `src/db/tutors.test.ts` using an in-memory DB that has a `projects` table with row `ch1` (copy the `:memory:` + `__setDbForTests` setup style of `src/db/crons.test.ts`; create the `tutors` table with the exact DDL above):
   - `upsertTutor then getTutor round-trips all fields; deeptutor_session_id is null`
   - `upsertTutor on existing row keeps deeptutor_session_id and created_at` (setTutorSession("ch1","s-1") → upsert with new goal → `getTutor("ch1")!.deeptutor_session_id === "s-1"` and goal updated)
   - `setTutorSession(ch, null) clears the id`
   - `deleteTutor removes the row`; `getTutor("missing") === undefined`
-- [ ] **Step 2:** `npx vitest run src/db/tutors.test.ts` → FAIL (module not found).
-- [ ] **Step 3:** Implement `src/db/tutors.ts` (use `INSERT … ON CONFLICT(channel_id) DO UPDATE SET` excluding `deeptutor_session_id`, `created_at`); add the DDL to `initDatabase` in `src/db/database.ts`; change `Project.backend` to `BackendName` and `setBackend(channelId, backend: BackendName)`.
-- [ ] **Step 4:** `npx vitest run src/db/tutors.test.ts src/db/database.test.ts && npx tsc --noEmit` → PASS / no errors.
-- [ ] **Step 5:** Commit `feat(R-003): tutors table and deeptutor backend value`.
+- [x] **Step 2:** `npx vitest run src/db/tutors.test.ts` → FAIL (module not found).
+- [x] **Step 3:** Implement `src/db/tutors.ts` (use `INSERT … ON CONFLICT(channel_id) DO UPDATE SET` excluding `deeptutor_session_id`, `created_at`); add the DDL to `initDatabase` in `src/db/database.ts`; change `Project.backend` to `BackendName` and `setBackend(channelId, backend: BackendName)`.
+- [x] **Step 4:** `npx vitest run src/db/tutors.test.ts src/db/database.test.ts && npx tsc --noEmit` → PASS / no errors.
+- [x] **Step 5:** Commit `feat(R-003): tutors table and deeptutor backend value`.
 
 ### Task 2: DeepTutor NDJSON → NormalizedEvent translator
 
@@ -229,3 +229,7 @@
 - [ ] **Step 3:** Implement and register in `client.ts`.
 - [ ] **Step 4:** `npx vitest run src/bot/commands/tutor.test.ts && npx tsc --noEmit && npx vitest run` → all PASS (full suite once here, it runs in ~3 s with no external credentials).
 - [ ] **Step 5:** Commit `feat(R-003): /tutor command`.
+
+## Execution log
+
+Deviation: Task 1 widened findSessionFile’s backend parameter to BackendName — TypeScript rejected both existing interaction.ts callers after Project.backend gained deeptutor; this only updates the backend type allow-list and leaves existing lookup behavior unchanged.

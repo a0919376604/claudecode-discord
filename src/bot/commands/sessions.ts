@@ -10,6 +10,7 @@ import os from "node:os";
 import readline from "node:readline";
 import { getProject, getSession, upsertSession } from "../../db/database.js";
 import { L } from "../../utils/i18n.js";
+import type { BackendName } from "../../db/types.js";
 
 interface SessionInfo {
   sessionId: string;
@@ -294,7 +295,7 @@ async function listCodexSessions(projectPath: string): Promise<SessionInfo[]> {
 }
 
 /** Resolve within this provider and project; never build a path from an interaction ID. */
-export async function findSessionFile(projectPath: string, sessionId: string, backend: "claude" | "codex" = "claude"): Promise<string | null> {
+export async function findSessionFile(projectPath: string, sessionId: string, backend: BackendName = "claude"): Promise<string | null> {
   if (backend === "codex") {
     for (const file of codexFiles()) {
       const session = await readCodexSession(file, projectPath);

@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import path from "node:path";
-import type { Project, RunPlanSlotRow, Session, SessionStatus } from "./types.js";
+import type { BackendName, Project, RunPlanSlotRow, Session, SessionStatus } from "./types.js";
 
 const DB_PATH = path.join(process.cwd(), "data.db");
 
@@ -19,6 +19,21 @@ export function initDatabase(): void {
       auto_approve INTEGER DEFAULT 0,
       source_path TEXT,
       created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS tutors (
+      channel_id TEXT PRIMARY KEY REFERENCES projects(channel_id) ON DELETE CASCADE,
+      subject TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      level TEXT,
+      deadline TEXT,
+      daily_minutes INTEGER,
+      menu TEXT,
+      push_time TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      language TEXT NOT NULL,
+      deeptutor_session_id TEXT,
+      created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -190,7 +205,7 @@ export function setAutoApprove(
 
 export function setBackend(
   channelId: string,
-  backend: "claude" | "codex",
+  backend: BackendName,
 ): void {
   db.prepare("UPDATE projects SET backend = ? WHERE channel_id = ?").run(
     backend,
