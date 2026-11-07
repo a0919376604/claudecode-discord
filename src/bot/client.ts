@@ -35,13 +35,14 @@ import * as codexCmd from "./commands/codex.js";
 import * as findSkillsCmd from "./commands/find-skills.js";
 import * as modelCmd from "./commands/model.js";
 import * as effortCmd from "./commands/effort.js";
+import * as tutorCmd from "./commands/tutor.js";
 
 import { scanAllCommandSources } from "../plugins/discovery.js";
 import { PluginRegistry } from "../plugins/registry.js";
 import { handlePluginCommand, handlePluginAutocomplete } from "../plugins/bridge.js";
 import { getAllProjects } from "../db/database.js";
 
-const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd, refreshBoardCmd, devsyncCmd, schedulesCmd, claudeCmd, codexCmd, findSkillsCmd, modelCmd, effortCmd];
+const commands = [registerCmd, unregisterCmd, worktreeCmd, statusCmd, stopCmd, autoApproveCmd, sessionsCmd, clearSessionsCmd, lastCmd, queueCmd, usageCmd, pluginsSyncCmd, pluginsListCmd, refreshBoardCmd, devsyncCmd, schedulesCmd, claudeCmd, codexCmd, findSkillsCmd, modelCmd, effortCmd, tutorCmd];
 export const botOwnedCommandNames = new Set(commands.map((c) => c.data.name));
 export const commandMap = new Collection<
   string,

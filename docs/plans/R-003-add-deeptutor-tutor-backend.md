@@ -218,18 +218,20 @@
   - `pause` — delete only `tutor:*` crons for the channel; reply. (Re-run `setup` to resume.)
   - `reset` — `setTutorSession(ch, null)`; reply that the next message starts a new learning path.
 
-- [ ] **Step 1: Write failing tests** in `src/bot/commands/tutor.test.ts` (mock `../../db/database.js`, `../../db/tutors.js`, `../../db/crons.js`, `../../claude/session-manager.js`, like `switch-backend.test.ts`; build an interaction stub with `options.getSubcommand/getString/getInteger`, `channelId`, `channel`, `editReply`):
+- [x] **Step 1: Write failing tests** in `src/bot/commands/tutor.test.ts` (mock `../../db/database.js`, `../../db/tutors.js`, `../../db/crons.js`, `../../claude/session-manager.js`, like `switch-backend.test.ts`; build an interaction stub with `options.getSubcommand/getString/getInteger`, `channelId`, `channel`, `editReply`):
   - `setup on unregistered channel replies with /register hint and writes nothing`
   - `setup creates tutor, switches backend, inserts tutor:daily "0 0 * * *" and tutor:weekly "0 0 * * 0" for 08:00 Asia/Taipei, and sends intake prompt`
   - `setup is idempotent`: existing crons `[tutor:daily, tutor:weekly, other]` → `deleteCronById` called for the two tutor ids only; `insertCron` called twice; tutor already has `deeptutor_session_id` → `sendMessage` NOT called; `setBackend` not called when already deeptutor
   - `setup with invalid time replies with error and writes nothing`
   - `pause deletes only tutor crons`
   - `reset clears the DeepTutor session id`
-- [ ] **Step 2:** `npx vitest run src/bot/commands/tutor.test.ts` → FAIL.
-- [ ] **Step 3:** Implement and register in `client.ts`.
-- [ ] **Step 4:** `npx vitest run src/bot/commands/tutor.test.ts && npx tsc --noEmit && npx vitest run` → all PASS (full suite once here, it runs in ~3 s with no external credentials).
-- [ ] **Step 5:** Commit `feat(R-003): /tutor command`.
+- [x] **Step 2:** `npx vitest run src/bot/commands/tutor.test.ts` → FAIL.
+- [x] **Step 3:** Implement and register in `client.ts`.
+- [x] **Step 4:** `npx vitest run src/bot/commands/tutor.test.ts && npx tsc --noEmit && npx vitest run` → all PASS (full suite once here, it runs in ~3 s with no external credentials).
+- [x] **Step 5:** Commit `feat(R-003): /tutor command`.
 
 ## Execution log
 
 Deviation: Task 1 widened findSessionFile’s backend parameter to BackendName — TypeScript rejected both existing interaction.ts callers after Project.backend gained deeptutor; this only updates the backend type allow-list and leaves existing lookup behavior unchanged.
+
+Tasks 1–6 verified in order and committed individually. Task 6 checks: 13 command tests passed; npx tsc --noEmit passed; full suite 711 passed, 1 pre-existing opt-in Codex e2e test skipped.
