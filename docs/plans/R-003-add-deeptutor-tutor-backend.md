@@ -188,7 +188,7 @@
   - Daily: instructs: call `mastery_status`; prioritize due reviews and weak points; **also advance at least one step toward the next goal objective**; if stuck on one weak point for days, change the teaching approach or `mastery_defer_objective`; keep it to about `daily_minutes` (default 15) minutes and mobile-friendly; menu is a preference, not a fixed list; end with one question via `mastery_quiz`; do not use ask_user.
   - Weekly: short mixed quiz of this week's material + progress report toward `goal`, any score estimate explicitly labelled as a rough estimate (`粗估`); do not use ask_user.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - `schedule.test.ts` (pass a fixed `now`):
     - `localTimeToUtcCron("08:00","Asia/Taipei")` → `"0 0 * * *"`
     - `localTimeToUtcCron("07:00","Asia/Taipei")` → `"0 23 * * *"`
@@ -197,10 +197,10 @@
     - `localTimeToUtcCron("23:30","America/New_York",6, new Date("2026-01-15T12:00:00Z"))` → `"30 4 * * 0"` (EST −5, Saturday → Sunday)
     - `"25:00"` throws `invalid time`; `"Mars/Base"` throws `invalid timezone`
   - `prompts.test.ts`: for a sample Tutor: intake contains goal, `mastery_profile`, `ask_user`; daily contains `mastery_status`, `mastery_quiz` and a phrase about advancing toward the goal; weekly contains `粗估` and the goal.
-- [ ] **Step 2:** `npx vitest run src/tutor/schedule.test.ts src/tutor/prompts.test.ts` → FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Same command → PASS.
-- [ ] **Step 5:** Commit `feat(R-003): tutor schedule conversion and prompts`.
+- [x] **Step 2:** `npx vitest run src/tutor/schedule.test.ts src/tutor/prompts.test.ts` → FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Same command → PASS.
+- [x] **Step 5:** Commit `feat(R-003): tutor schedule conversion and prompts`.
 
 ### Task 6: `/tutor` slash command
 
