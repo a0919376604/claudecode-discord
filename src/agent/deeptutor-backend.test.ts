@@ -27,6 +27,7 @@ function child(run: (proc: ReturnType<typeof makeChild>) => void) {
 function makeChild() {
   const proc = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(), stderr: new PassThrough(),
+    unref: vi.fn(),
     kill: vi.fn((_signal?: string) => { proc.stdout.end(); proc.stderr.end(); proc.emit("exit", 0); return true; }),
   });
   return proc;
@@ -84,9 +85,31 @@ describe("DeepTutorBackend", () => {
     expect(await collect()).toEqual([{ type: "result", text: expect.stringContaining("/tutor setup"), isError: true }]);
     expect(spawn).not.toHaveBeenCalled();
   });
-  it("only one result even if both result and done arrive", async () => {
-    const proc = child(p => p.stdout.write('{"type":"result","content":"done"}\n{"type":"done"}\n'));
-    expect(await collect()).toEqual([{ type: "result", text: "done", isError: false }]);
+  it("normal finish yields one result on done and never kills the child", async () => {
+    const proc = child(p => p.stdout.write('{"type":"content","content":"Hi"}\n{"type":"result","content":""}\n{"type":"done"}\n'));
+    expect(await collect()).toEqual([
+      { type: "text_delta", text: "Hi" }, { type: "result", text: "", isError: false },
+    ]);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+  it("exiting after result without done yields an error", async () => {
+    child(p => {
+      p.stdout.end('{"type":"result","content":""}\n');
+      p.stderr.end();
+      p.emit("exit", 0);
+    });
+    expect(await collect()).toEqual([{ type: "result", text: "DeepTutor exited with code 0", isError: true }]);
+  });
+  it("error event yields one result without killing the child", async () => {
+    const proc = child(p => p.stdout.write('{"type":"error","content":"bad"}\n{"type":"done"}\n'));
+    expect(await collect()).toEqual([{ type: "result", text: "bad", isError: true }]);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+  it("abandoning the iterator terminates the child", async () => {
+    const proc = child(p => p.stdout.write('{"type":"content","content":"Working"}\n'));
+    const stream = new DeepTutorBackend().start(opts);
+    await stream.next();
+    await stream.return(undefined);
     expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
   });
   it("duplicate question card text is yielded once", async () => {

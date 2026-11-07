@@ -33,17 +33,19 @@ export class DeepTutorBackend implements AgentBackend {
     let stdoutClosed = false;
     let exitCode: number | null = null;
     let spawnError: NodeJS.ErrnoException | undefined;
+    let terminalEventSeen = false;
     reader.on("line", line => {
       stale ||= /Conversation not found/i.test(line);
       lines.push(line);
       notify();
     });
     reader.on("close", () => { stdoutClosed = true; if (exited) { finished = true; notify(); } });
-    proc.stderr!.on("data", (chunk: Buffer) => {
+    const onStderr = (chunk: Buffer) => {
       const combined = Buffer.concat([stderr, chunk]);
       stale ||= /Conversation not found/i.test(combined.toString());
       stderr = combined.subarray(-8192);
-    });
+    };
+    proc.stderr!.on("data", onStderr);
     proc.once("error", (error: NodeJS.ErrnoException) => {
       spawnError = error;
       exited = finished = true;
@@ -83,8 +85,9 @@ export class DeepTutorBackend implements AgentBackend {
               cards.add(card);
             }
             if (event.type === "result") {
+              terminalEventSeen = true;
               reader.close();
-              if (!exited) proc.kill("SIGTERM");
+              proc.unref();
               yield stale ? { type: "result", isError: true, text: staleMessage() } : event;
               return;
             }
@@ -103,7 +106,8 @@ export class DeepTutorBackend implements AgentBackend {
       yield { type: "result", text, isError: true };
     } finally {
       reader.close();
-      if (!exited && !proc.killed) proc.kill("SIGTERM");
+      proc.stderr!.off("data", onStderr);
+      if (!terminalEventSeen && !exited && !proc.killed) proc.kill("SIGTERM");
       if (this.proc === proc) this.proc = null;
     }
   }

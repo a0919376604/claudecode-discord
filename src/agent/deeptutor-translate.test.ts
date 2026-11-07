@@ -30,7 +30,10 @@ describe("translateDeepTutorEvent", () => {
   });
   it.each([
     [{ type: "error", content: "bad" }, [{ type: "result", text: "bad", isError: true }]],
+    [{ type: "result", content: "" }, []],
+    [{ type: "result", content: "not finished" }, []],
     [{ type: "done" }, [{ type: "result", text: "", isError: false }]],
+    [{ type: "done", content: "finished" }, [{ type: "result", text: "finished", isError: false }]],
     [{ type: "unknown" }, []], [null, []],
     [{ type: "content", content: "" }, []],
     [{ type: "session", session_id: "s2" }, [{ type: "session_init", sessionId: "s2" }]],

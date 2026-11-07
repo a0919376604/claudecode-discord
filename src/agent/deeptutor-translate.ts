@@ -45,7 +45,6 @@ export function translateDeepTutorEvent(ev: unknown): NormalizedEvent[] {
     case "error":
       events.push({ type: "result", text: content || L("DeepTutor error", "DeepTutor 오류"), isError: true });
       break;
-    case "result":
     case "done":
       events.push({ type: "result", text: content, isError: false });
       break;

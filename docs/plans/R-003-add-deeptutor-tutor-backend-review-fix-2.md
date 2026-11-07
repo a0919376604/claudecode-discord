@@ -1,6 +1,6 @@
 # R-003 Review Fix (attempt 2) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans. Steps use checkbox (`- [x]`) syntax.
 
 **Goal:** Fix the review-attempt-1 findings in the DeepTutor tutor backend without changing any spec Decision.
 
@@ -24,11 +24,11 @@
 - The `finally` cleanup kills the child only when the run did not reach a normal `done` (consumer abandoned the iterator, or `interrupt()` was called). `interrupt()` still sends `SIGTERM`.
 - If the child exits without `done`, keep the existing error-result path.
 
-- [ ] **Step 1:** Rewrite test `only one result even if both result and done arrive` → `normal finish yields one result on done and never kills the child`: stdout lines `{"type":"content","content":"Hi"}`, `{"type":"result","content":""}`, `{"type":"done"}` → events end with exactly one `result{isError:false}`; `expect(proc.kill).not.toHaveBeenCalled()`. Update translator tests: `result → []`, `done → result not error`. Add `interrupt still sends SIGTERM` if not already covered.
-- [ ] **Step 2:** `npx vitest run src/agent/deeptutor-backend.test.ts src/agent/deeptutor-translate.test.ts` → FAIL on the changed tests.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Same command → PASS.
-- [ ] **Step 5:** Commit `fix(R-003): end DeepTutor turns on done without killing the CLI`.
+- [x] **Step 1:** Rewrite test `only one result even if both result and done arrive` → `normal finish yields one result on done and never kills the child`: stdout lines `{"type":"content","content":"Hi"}`, `{"type":"result","content":""}`, `{"type":"done"}` → events end with exactly one `result{isError:false}`; `expect(proc.kill).not.toHaveBeenCalled()`. Update translator tests: `result → []`, `done → result not error`. Add `interrupt still sends SIGTERM` if not already covered.
+- [x] **Step 2:** `npx vitest run src/agent/deeptutor-backend.test.ts src/agent/deeptutor-translate.test.ts` → FAIL on the changed tests.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Same command → PASS.
+- [x] **Step 5:** Commit `fix(R-003): end DeepTutor turns on done without killing the CLI`.
 
 ### Task 2: Pass the prompt after `--`; stale check only on stderr / non-JSON lines
 
@@ -67,3 +67,7 @@
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
 - [ ] **Step 5:** `npx tsc --noEmit && npx vitest run` → all PASS.
 - [ ] **Step 6:** Commit `fix(R-003): tutor copy follows L(en, kr)`.
+
+## Execution log
+
+- Task 1: RED confirmed (5 failures: premature result translation, no-done success, and child termination); GREEN: 35/35 scoped tests. Existing interrupt test and new iterator-abandonment test pass. Explicit error events also finish without signalling the child, as required by the terminal-event behavior.
