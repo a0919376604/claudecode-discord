@@ -130,6 +130,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       return;
     }
     setTutorSession(channelId, null);
-    await interaction.editReply({ content: L("✅ Tutor reset. Your next message starts a new learning path.", "✅ 튜터가 초기화되었습니다. 다음 메시지에서 새 학습 경로를 시작합니다.") });
+    await interaction.editReply({ content: L("✅ Tutor reset. Your next message starts a new learning path. Run /tutor setup to set its goal and learner profile.", "✅ 튜터가 초기화되었습니다. 다음 메시지에서 새 학습 경로를 시작합니다. /tutor setup으로 새 경로의 목표와 학습자 프로필을 설정하세요.") });
   }
 }

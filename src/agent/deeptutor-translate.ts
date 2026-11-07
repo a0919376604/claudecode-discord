@@ -18,7 +18,7 @@ export function formatQuestionCard(card: unknown): string | null {
     if (typeof o.label !== "string" || typeof o.body !== "string") return null;
     lines.push(`${o.label}. ${o.body}`);
   }
-  lines.push(L("↩️ 直接在頻道回覆你的答案", "↩️ 채널에 답을 직접 입력하세요"));
+  lines.push(L("↩️ Reply with your answer in this channel", "↩️ 이 채널에 답을 입력하세요"));
   return lines.join("\n");
 }
 

@@ -126,7 +126,7 @@ describe("DeepTutorBackend", () => {
     const proc = child(p => p.stdout.write('{"type":"content","content":"Working"}\n'));
     const stream = new DeepTutorBackend().start(opts);
     await stream.next();
-    await stream.return(undefined);
+    await stream.return!(undefined);
     expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
   });
   it("duplicate question card text is yielded once", async () => {

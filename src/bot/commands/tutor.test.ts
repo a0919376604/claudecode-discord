@@ -135,6 +135,13 @@ describe("/tutor", () => {
     expect(setTutorSession).toHaveBeenCalledWith("ch", null);
     expect(clearSessionId).not.toHaveBeenCalled();
   });
+  it("reset reply mentions /tutor setup", async () => {
+    storedTutor = { ...configuredTutor };
+    const inter = interaction("reset");
+    await execute(inter);
+    expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("/tutor setup") }));
+    expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringMatching(/goal.*profile/i) }));
+  });
   it("reset refuses an active turn so a late session event cannot undo it", async () => {
     storedTutor = { ...configuredTutor, deeptutor_session_id: null };
     vi.mocked(sessionManager.isActive).mockReturnValue(true);

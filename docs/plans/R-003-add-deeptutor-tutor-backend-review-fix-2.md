@@ -63,13 +63,16 @@
 - `formatQuestionCard` last line: `L("↩️ Reply with your answer in this channel", "↩️ 이 채널에 답을 입력하세요")` — English in the first slot, Korean second (the `L(en, kr)` convention). Update any test asserting the old Chinese string.
 - `/tutor reset` reply also tells the user to run `/tutor setup` to give the new learning path its goal and profile (English + Korean via `L`).
 
-- [ ] **Step 1:** Adjust/add tests (`card footer uses the English slot`; `reset reply mentions /tutor setup`).
-- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5:** `npx tsc --noEmit && npx vitest run` → all PASS.
-- [ ] **Step 6:** Commit `fix(R-003): tutor copy follows L(en, kr)`.
+- [x] **Step 1:** Adjust/add tests (`card footer uses the English slot`; `reset reply mentions /tutor setup`).
+- [x] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
+- [x] **Step 5:** `npx tsc --noEmit && npx vitest run` → all PASS.
+- [x] **Step 6:** Commit `fix(R-003): tutor copy follows L(en, kr)`.
 
 ## Execution log
 
 - Task 1: RED confirmed (5 failures: premature result translation, no-done success, and child termination); GREEN: 35/35 scoped tests. Existing interrupt test and new iterator-abandonment test pass. Explicit error events also finish without signalling the child, as required by the terminal-event behavior.
 - Task 2: RED confirmed (4 failures: argument ordering and parsed-reply false stale detection); GREEN: 16/16 backend tests. Prompt is after `--`; stale detection remains active on stderr and non-JSON stdout only.
 - Task 3: RED confirmed (missing shared helper and tutor crons surviving both confirmed switches); GREEN: 19/19 scoped tests, including real in-memory SQLite checks for cron deletion and tutor/session preservation. Claude→Codex and cancellation already passed before implementation. No existing yes-branch test existed, so added the planned `switch-confirm.test.ts`.
+- Task 4: RED confirmed (5 copy assertion failures); GREEN: 38/38 scoped tests. Final `npx tsc --noEmit && npx vitest run`: type-check passed, 728 passed / 1 existing skipped test (`src/agent/codex-backend.e2e.test.ts`).
+- Deviation: Added a non-null assertion to the Task 1 test's `stream.return!` call — type-checking exposed that `AsyncIterableIterator.return` is optional in its interface, although this async generator always supplies it; the assertion still executes unconditionally.
+- Deviation: Updated the old question-card footer assertion in `src/claude/session-manager-integration.test.ts` — the full suite exposed this additional consumer of the translated copy; retained its exact output assertion with the requested English footer.

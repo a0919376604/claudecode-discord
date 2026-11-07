@@ -160,7 +160,7 @@ describe("SessionManager with MockAgentBackend", () => {
     testBackend.endStream();
     await sessionManager.sendMessage(channel, "daily push");
     const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
-    expect(messages.map(m => m.content).filter(Boolean).join("")).toBe("Hello world\n\n📝 Pick\nA. large\n↩️ 直接在頻道回覆你的答案");
+    expect(messages.map(m => m.content).filter(Boolean).join("")).toBe("Hello world\n\n📝 Pick\nA. large\n↩️ Reply with your answer in this channel");
   });
 
   it("shows the effective Codex model in progress and the result footer", async () => {

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("../utils/i18n.js", () => ({ L: (en: string) => en }));
 import { formatQuestionCard, translateDeepTutorEvent } from "./deeptutor-translate.js";
 
 const card = {
@@ -7,7 +8,7 @@ const card = {
   get expected_answer(): never { throw new Error("must not read expected_answer"); },
   get explanation(): never { throw new Error("must not read explanation"); },
 };
-const cardText = "📝 Pick the synonym of big\n🎯 Vocab\nA. large\nB. tiny\n↩️ 直接在頻道回覆你的答案";
+const cardText = "📝 Pick the synonym of big\n🎯 Vocab\nA. large\nB. tiny\n↩️ Reply with your answer in this channel";
 
 describe("translateDeepTutorEvent", () => {
   it("content → text_delta", () => {
@@ -44,6 +45,9 @@ describe("translateDeepTutorEvent", () => {
 });
 
 describe("formatQuestionCard", () => {
+  it("card footer uses the English slot", () => {
+    expect(formatQuestionCard({ prompt: "Pick" })?.split("\n").at(-1)).toBe("↩️ Reply with your answer in this channel");
+  });
   it("formats only public question fields", () => { expect(formatQuestionCard(card)).toBe(cardText); });
   it.each([null, {}, { prompt: 12 }, { prompt: "" }, { prompt: "ok", options: [{ label: "A" }] }])("rejects invalid card %j", (input) => {
     expect(formatQuestionCard(input)).toBeNull();
