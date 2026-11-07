@@ -52,7 +52,7 @@ export function createSwitchBackendCommand(target: "claude" | "codex", displayNa
           .setLabel(L("Cancel", "취소"))
           .setStyle(ButtonStyle.Secondary),
       );
-      const currentDisplay = project.backend === "claude" ? "Claude" : "Codex";
+      const currentDisplay = project.backend === "deeptutor" ? "DeepTutor" : project.backend === "claude" ? "Claude" : "Codex";
       await interaction.editReply({
         content: L(
           `⚠️ Switching from **${currentDisplay}** to **${displayName}** will clear the existing ${currentDisplay} session on this channel. The old session file still exists on disk but this channel will no longer resume it. Continue?`,

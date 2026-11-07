@@ -154,13 +154,13 @@
 - `wakeUp(channel, prompt, source)`: when `getProject(channel.id)?.backend === "deeptutor"` → `this.sendMessage(channel, prompt)` (no preamble); otherwise unchanged.
 - `runBackend`: for `deeptutor` pass `model: undefined, effort: undefined`.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - in `session-manager.test.ts` `describe("SessionManager.wakeUp")`: `deeptutor channel gets the raw prompt without preamble` — mock `getProject` to return `{backend:"deeptutor", …}`; expect `calls[0].prompt === "daily push"` exactly. (Existing two wakeUp tests must keep passing — make sure their `getProject` mock returns a claude project or undefined.)
   - in `switch-backend.test.ts`: `switching from deeptutor names DeepTutor in the warning` — project `{backend:"deeptutor"}`, `/claude` → `editReply` content contains `"DeepTutor"`.
-- [ ] **Step 2:** `npx vitest run src/claude/session-manager.test.ts src/bot/commands/switch-backend.test.ts` → FAIL on the new tests.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** `npx vitest run src/claude/session-manager.test.ts src/claude/session-manager-integration.test.ts src/bot/commands/switch-backend.test.ts && npx tsc --noEmit` → PASS.
-- [ ] **Step 5:** Commit `feat(R-003): session manager handles deeptutor backend`.
+- [x] **Step 2:** `npx vitest run src/claude/session-manager.test.ts src/bot/commands/switch-backend.test.ts` → FAIL on the new tests.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** `npx vitest run src/claude/session-manager.test.ts src/claude/session-manager-integration.test.ts src/bot/commands/switch-backend.test.ts && npx tsc --noEmit` → PASS.
+- [x] **Step 5:** Commit `feat(R-003): session manager handles deeptutor backend`.
 
 ### Task 5: Tutor time conversion and prompts
 

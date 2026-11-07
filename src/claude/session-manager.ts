@@ -406,8 +406,8 @@ class SessionManager {
         skipPermissions: isSkipPermissionsEnabled(),
         channelId,
         channel,   // required field — see ledger Ruling R2 (Task 4 fix round 1)
-        model: project.backend === "codex" ? project.codex_model ?? undefined : project.model ?? getConfig().CLAUDE_MODEL,
-        effort: project.backend === "codex" ? undefined : (project.effort ?? undefined) as EffortLevel | undefined,
+        model: project.backend === "deeptutor" ? undefined : project.backend === "codex" ? project.codex_model ?? undefined : project.model ?? getConfig().CLAUDE_MODEL,
+        effort: project.backend === "claude" ? (project.effort ?? undefined) as EffortLevel | undefined : undefined,
       });
 
     let eventStream = runBackend(Boolean(resumeSessionId));
@@ -440,8 +440,8 @@ class SessionManager {
                   // First sighting just records; a real change gets announced.
                   if (lastModel && !card) {
                     await channel.send(L(
-                      `🆕 ${project.backend === "codex" ? "Codex" : "Claude"} model changed: \`${lastModel}\` → \`${event.model}\``,
-                      `🆕 ${project.backend === "codex" ? "Codex" : "Claude"} 모델 변경: \`${lastModel}\` → \`${event.model}\``,
+                      `🆕 ${project.backend === "deeptutor" ? "DeepTutor" : project.backend === "codex" ? "Codex" : "Claude"} model changed: \`${lastModel}\` → \`${event.model}\``,
+                      `🆕 ${project.backend === "deeptutor" ? "DeepTutor" : project.backend === "codex" ? "Codex" : "Claude"} 모델 변경: \`${lastModel}\` → \`${event.model}\``,
                     )).catch(() => {});
                   }
                   setLastModel(channelId, event.model);
@@ -900,6 +900,10 @@ class SessionManager {
     prompt: string,
     source: string,
   ): Promise<void> {
+    if (getProject(channel.id)?.backend === "deeptutor") {
+      await this.sendMessage(channel, prompt);
+      return;
+    }
     const preamble =
       `<channel source="discord" chat_id="${channel.id}" user="wakeup:${source}" ts="${new Date().toISOString()}">\n` +
       `wakeup-prompt source=${source}\n` +
