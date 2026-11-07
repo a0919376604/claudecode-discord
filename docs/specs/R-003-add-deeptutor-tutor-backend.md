@@ -156,11 +156,12 @@ DeepTutor 的學習路徑（知識點 + 掌握度 + 到期複習）是每日內�
 | Seam | Interface | Guaranteed behavior |
 |---|---|---|
 | DeepTutor CLI → bot | 子程序 stdout NDJSON，每行一個 `StreamEvent` JSON | 非 JSON 行忽略不中斷；子程序非 0 結束且未收到 `result` 時，產生一個 `isError: true` 的 `result` |
-| `translateDeepTutorEvent(ev)` | `(ev: unknown) => NormalizedEvent[]` 純函式 | `content` → `text_delta`；`session`（或首個帶 `session_id` 的事件）→ `session_init`；`tool_call` → `tool_start`；`tool_result` → `tool_end`，若 metadata 帶 `mastery_question` 題卡則另產生一段 `text_delta`（題目 + 打亂後選項，不含答案）；`error` → `result{isError:true}`；`result`/`done` → `result{isError:false}`；未知 type → `[]` |
-| `DeepTutorBackend` | `AgentBackend`（`src/agent/backend.ts`） | 每次 `start` 至多一個 `result`；`interrupt()` 終止子程序；`respondToApproval` / `respondToQuestion` 為 no-op；`isResumeStaleError` 永遠 `false`；`"Conversation not found"` 轉成使用者可讀的錯誤 `result`，不自動開新 session |
+| `translateDeepTutorEvent(ev)` | `(ev: unknown) => NormalizedEvent[]` 純函式 | `content` → `text_delta`；`session`（或首個帶 `session_id` 的事件）→ `session_init`；`tool_call` → `tool_start`；`tool_result` → `tool_end`，若 metadata 帶 `mastery_question` 題卡則另產生一段 `text_delta`（題目 + 打亂後選項，不含答案）；`error` → `result{isError:true}`；`done` → `result{isError:false}`；`result` → `[]`（DeepTutor 在 `result` 之後、`done` 之前才寫入 assistant 訊息，故以 `done` 結束一輪，見 review-fix-2）；未知 type → `[]` |
+| `DeepTutorBackend` | `AgentBackend`（`src/agent/backend.ts`） | 每次 `start` 至多一個 `result`；正常結束（收到 `done`）不送訊號給子程序；`interrupt()` 終止子程序；`respondToApproval` / `respondToQuestion` 為 no-op；`isResumeStaleError` 永遠 `false`；`"Conversation not found"` 轉成使用者可讀的錯誤 `result`，不自動開新 session |
 | `tutors` 表 / `src/db/tutors.ts` | `getTutor(channelId)`、`upsertTutor(row)`、`setTutorSession(channelId, sessionId)`、`deleteTutor(channelId)` | 一頻道一列（`channel_id` PK，FK → `projects` CASCADE）；`deeptutor_session_id` 只被 `setTutorSession`（首次取得）與 `/tutor reset` 改動 |
 | `localTimeToUtcCron(hhmm, tz, dow?)` | 純函式 → 5 欄 cron 字串（UTC） | 依「目前」時區偏移換算；跨日時調整星期欄 |
 | `/tutor` 指令 | discord.js `SlashCommandBuilder`，`setup` / `show` / `reset` / `pause` | `setup` 寫 `tutors`、把 `projects.backend` 設為 `deeptutor`、重建該頻道 `tutor:*` cron（不動其他 cron）、送出入門第一輪；`pause` 只刪 `tutor:*` cron |
+| 切換 backend（`/claude`、`/codex` 確認按鈕） | `src/bot/handlers/interaction.ts` | 從 `deeptutor` 切走時刪除該頻道 `tutor:*` cron；`tutors` 列保留 |
 | `SessionManager.wakeUp` | 既有 | `deeptutor` backend 時 prompt 原樣送出，不加 preamble；其他 backend 行為不變 |
 
 ## Decisions
