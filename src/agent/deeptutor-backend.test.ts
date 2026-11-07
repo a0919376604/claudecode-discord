@@ -48,14 +48,31 @@ describe("DeepTutorBackend", () => {
     expect(await collect()).toEqual([
       { type: "session_init", sessionId: "s9" }, { type: "text_delta", text: "Hello" }, { type: "result", text: "", isError: false },
     ]);
-    expect(spawn).toHaveBeenCalledWith("deeptutor", ["run", "mastery_path", "hello", "--format", "json", "-l", "zh"], { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    expect(spawn).toHaveBeenCalledWith("deeptutor", ["run", "mastery_path", "--format", "json", "-l", "zh", "--", "hello"], { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
     expect(setTutorSession.mock.calls).toEqual([["ch", "s9"]]);
   });
   it("resumes with stored session id and ignores opts.resumeSessionId", async () => {
     getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
     child(p => p.stdout.write('{"type":"done"}\n'));
     await collect(new DeepTutorBackend(), { ...opts, resumeSessionId: "other" });
-    expect(spawn.mock.calls[0][1]).toEqual(["run", "mastery_path", "hello", "--session", "s1", "--format", "json", "-l", "zh"]);
+    expect(spawn.mock.calls[0][1]).toEqual(["run", "mastery_path", "--format", "json", "-l", "zh", "--session", "s1", "--", "hello"]);
+  });
+  it('prompt starting with "-" is passed after --', async () => {
+    getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
+    child(p => p.stdout.write('{"type":"done"}\n'));
+    await collect(new DeepTutorBackend(), { ...opts, prompt: "-3" });
+    const args = spawn.mock.calls[0][1] as string[];
+    expect(args.slice(-2)).toEqual(["--", "-3"]);
+    expect(args.indexOf("--session")).toBeLessThan(args.indexOf("--"));
+    expect(args.indexOf("--format")).toBeLessThan(args.indexOf("--"));
+  });
+  it('reply text containing "conversation not found" is not treated as stale', async () => {
+    getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
+    child(p => p.stdout.write('{"type":"content","content":"Error: Conversation not found means…"}\n{"type":"done"}\n'));
+    expect(await collect()).toEqual([
+      { type: "text_delta", text: "Error: Conversation not found means…" },
+      { type: "result", text: "", isError: false },
+    ]);
   });
   it("noisy stdout reassembles split lines", async () => {
     child(p => {

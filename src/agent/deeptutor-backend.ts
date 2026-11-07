@@ -17,9 +17,9 @@ export class DeepTutorBackend implements AgentBackend {
     }
     const bin = getConfig().DEEPTUTOR_BIN;
     const proc = spawn(bin, [
-      "run", "mastery_path", opts.prompt,
+      "run", "mastery_path", "--format", "json", "-l", tutor.language,
       ...(tutor.deeptutor_session_id ? ["--session", tutor.deeptutor_session_id] : []),
-      "--format", "json", "-l", tutor.language,
+      "--", opts.prompt,
     ], { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
     this.proc = proc;
     const reader = createInterface({ input: proc.stdout! });
@@ -35,7 +35,6 @@ export class DeepTutorBackend implements AgentBackend {
     let spawnError: NodeJS.ErrnoException | undefined;
     let terminalEventSeen = false;
     reader.on("line", line => {
-      stale ||= /Conversation not found/i.test(line);
       lines.push(line);
       notify();
     });
@@ -68,7 +67,10 @@ export class DeepTutorBackend implements AgentBackend {
         if (lines.length) {
           const line = lines.shift()!;
           let raw: Record<string, unknown> | null;
-          try { raw = JSON.parse(line); } catch { continue; }
+          try { raw = JSON.parse(line); } catch {
+            stale ||= /Conversation not found/i.test(line);
+            continue;
+          }
           const mapped = translateDeepTutorEvent(raw);
           const id = mapped.find(e => e.type === "session_init")?.sessionId ?? raw?.session_id;
           if (!sessionSeen && typeof id === "string" && id) {

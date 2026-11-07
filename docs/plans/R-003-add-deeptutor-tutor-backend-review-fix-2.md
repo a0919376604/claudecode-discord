@@ -38,11 +38,11 @@
 - Args order: `["run", "mastery_path", "--format", "json", "-l", tutor.language, ...(sessionId ? ["--session", sessionId] : []), "--", opts.prompt]`.
 - `/Conversation not found/i` is tested only against stderr text and stdout lines that fail `JSON.parse`; never against parsed NDJSON events.
 
-- [ ] **Step 1:** Tests: `prompt starting with "-" is passed after --` (prompt `"-3"` → `args.slice(-2)` equals `["--","-3"]` and `--session`/`--format` appear before `--`); update `resumes with stored session id…` assertions to the new order; `reply text containing "conversation not found" is not treated as stale` (stdout `{"type":"content","content":"Error: Conversation not found means…"}` then `{"type":"done"}` → final result `isError:false`).
-- [ ] **Step 2:** Run `npx vitest run src/agent/deeptutor-backend.test.ts` → FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Same → PASS.
-- [ ] **Step 5:** Commit `fix(R-003): safe DeepTutor CLI args and stale-session detection`.
+- [x] **Step 1:** Tests: `prompt starting with "-" is passed after --` (prompt `"-3"` → `args.slice(-2)` equals `["--","-3"]` and `--session`/`--format` appear before `--`); update `resumes with stored session id…` assertions to the new order; `reply text containing "conversation not found" is not treated as stale` (stdout `{"type":"content","content":"Error: Conversation not found means…"}` then `{"type":"done"}` → final result `isError:false`).
+- [x] **Step 2:** Run `npx vitest run src/agent/deeptutor-backend.test.ts` → FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Same → PASS.
+- [x] **Step 5:** Commit `fix(R-003): safe DeepTutor CLI args and stale-session detection`.
 
 ### Task 3: Stop tutor pushes when the channel leaves the deeptutor backend
 
@@ -71,3 +71,4 @@
 ## Execution log
 
 - Task 1: RED confirmed (5 failures: premature result translation, no-done success, and child termination); GREEN: 35/35 scoped tests. Existing interrupt test and new iterator-abandonment test pass. Explicit error events also finish without signalling the child, as required by the terminal-event behavior.
+- Task 2: RED confirmed (4 failures: argument ordering and parsed-reply false stale detection); GREEN: 16/16 backend tests. Prompt is after `--`; stale detection remains active on stderr and non-JSON stdout only.
