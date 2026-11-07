@@ -98,17 +98,17 @@
   - anything else / non-object → `[]`
 - `formatQuestionCard` output (exact layout): first line `📝 ` + `prompt`; if `objective.name` non-empty append line `🎯 <name>`; for each option a line `<label>. <body>`; last line `↩️ 直接在頻道回覆你的答案` . Must never read `expected_answer` / `explanation`.
 
-- [ ] **Step 1: Write failing tests** (`src/agent/deeptutor-translate.test.ts`):
+- [x] **Step 1: Write failing tests** (`src/agent/deeptutor-translate.test.ts`):
   - `content → text_delta`: `{type:"content",content:"hi"}` → `[{type:"text_delta",text:"hi"}]`
   - `session → session_init from metadata`: `{type:"session",metadata:{session_id:"s1"}}` → `[{type:"session_init",sessionId:"s1"}]`
   - `tool_result with card emits tool_end then card text`: metadata `{tool:"mastery_quiz", tool_metadata:{mastery_question:{prompt:"Pick the synonym of big", objective:{id:"k1",name:"Vocab"}, options:[{label:"A",body:"large"},{label:"B",body:"tiny"}], expected_answer:"A"}}}` → second event text contains `"A. large"`, `"B. tiny"`, `"Pick the synonym of big"` and does NOT contain `"expected"`
   - `tool_call → tool_start`: `{type:"tool_call",content:"mastery_status",metadata:{args:{a:1}}}` → `[{type:"tool_start",toolName:"mastery_status",input:{a:1}}]`
   - `content with card metadata emits text then card text`
   - `error → isError result`; `done → result not error`; `unknown type → []`; `null → []`
-- [ ] **Step 2:** `npx vitest run src/agent/deeptutor-translate.test.ts` → FAIL.
-- [ ] **Step 3:** Implement both functions.
-- [ ] **Step 4:** Same command → PASS.
-- [ ] **Step 5:** Commit `feat(R-003): DeepTutor event translator`.
+- [x] **Step 2:** `npx vitest run src/agent/deeptutor-translate.test.ts` → FAIL.
+- [x] **Step 3:** Implement both functions.
+- [x] **Step 4:** Same command → PASS.
+- [x] **Step 5:** Commit `feat(R-003): DeepTutor event translator`.
 
 ### Task 3: `DeepTutorBackend` + factory + config
 
