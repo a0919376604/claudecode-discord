@@ -12,7 +12,7 @@ import { getProject, setBackend, clearSessionId } from "../../db/database.js";
 import { getTutor, upsertTutor, setTutorSession } from "../../db/tutors.js";
 import { insertCron, listCronsByChannel, deleteCronById, countCronsByChannel } from "../../db/crons.js";
 import { sessionManager } from "../../claude/session-manager.js";
-import { data, execute } from "./tutor.js";
+import { data, execute, deleteTutorCrons } from "./tutor.js";
 
 let storedTutor: Tutor | undefined;
 let crons: CronRow[];
@@ -116,6 +116,12 @@ describe("/tutor", () => {
     await execute(interaction());
     expect(crons).toHaveLength(50);
     expect(insertCron).toHaveBeenCalledTimes(2);
+  });
+  it("deleteTutorCrons deletes only tutor:* rows and returns the count", () => {
+    crons = [cron("d", "tutor:daily"), cron("w", "tutor:weekly"), cron("other", "tutor:custom"), cron("foreign", "tutor:daily", "other-channel")];
+    expect(deleteTutorCrons("ch")).toBe(2);
+    expect(crons.map(c => c.id)).toEqual(["other", "foreign"]);
+    expect(deleteTutorCrons("ch")).toBe(0);
   });
   it("pause deletes only tutor crons", async () => {
     crons = [cron("d", "tutor:daily"), cron("w", "tutor:weekly"), cron("other", "tutor:custom"), cron("foreign", "tutor:daily", "other-channel")];

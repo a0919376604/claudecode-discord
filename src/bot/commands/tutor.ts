@@ -30,6 +30,14 @@ function isTutorCron(cron: CronRow): boolean {
   return cron.name === "tutor:daily" || cron.name === "tutor:weekly";
 }
 
+export function deleteTutorCrons(channelId: string): number {
+  let count = 0;
+  for (const cron of listCronsByChannel(channelId).filter(isTutorCron)) {
+    if (deleteCronById(cron.id)) count++;
+  }
+  return count;
+}
+
 function tutorEmbed(tutor: Tutor, crons: CronRow[]): EmbedBuilder {
   const embed = new EmbedBuilder().setTitle(L("📚 DeepTutor tutor", "📚 DeepTutor 튜터")).setColor(0x5865f2)
     .addFields(
@@ -91,7 +99,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       clearSessionId(channelId);
       setBackend(channelId, "deeptutor");
     }
-    for (const cron of oldCrons) deleteCronById(cron.id);
+    deleteTutorCrons(channelId);
     const crons: CronRow[] = [
       { id: randomUUID(), channel_id: channelId, name: "tutor:daily", cron_expr: daily, prompt: buildDailyPrompt(tutor), next_fire: nextFireAfter(daily, now), last_fire: null, created_at: now },
       { id: randomUUID(), channel_id: channelId, name: "tutor:weekly", cron_expr: weekly, prompt: buildWeeklyPrompt(tutor), next_fire: nextFireAfter(weekly, now), last_fire: null, created_at: now },
@@ -105,7 +113,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return;
   }
   if (sub === "pause") {
-    for (const cron of listCronsByChannel(channelId).filter(isTutorCron)) deleteCronById(cron.id);
+    deleteTutorCrons(channelId);
     await interaction.editReply({ content: L("⏸️ Tutor pushes paused. Run /tutor setup to resume.", "⏸️ 튜터 알림이 일시정지되었습니다. /tutor setup으로 재개하세요.") });
     return;
   }

@@ -50,11 +50,11 @@
 
 **Behavior:** when the confirmed switch target is `claude` or `codex` and the project's previous backend was `deeptutor`, call `deleteTutorCrons(channelId)`. The `tutors` row is kept (spec Decision). The confirmation reply mentions that tutor pushes are paused and `/tutor setup` resumes them.
 
-- [ ] **Step 1:** Tests: `deleteTutorCrons deletes only tutor:* rows and returns the count`; `confirming /claude on a deeptutor channel deletes tutor crons and keeps the tutor row`; `confirming /codex on a claude channel does not touch crons`.
-- [ ] **Step 2:** Run the touched test files → FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Same → PASS.
-- [ ] **Step 5:** Commit `fix(R-003): pause tutor pushes when switching away from deeptutor`.
+- [x] **Step 1:** Tests: `deleteTutorCrons deletes only tutor:* rows and returns the count`; `confirming /claude on a deeptutor channel deletes tutor crons and keeps the tutor row`; `confirming /codex on a claude channel does not touch crons`.
+- [x] **Step 2:** Run the touched test files → FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Same → PASS.
+- [x] **Step 5:** Commit `fix(R-003): pause tutor pushes when switching away from deeptutor`.
 
 ### Task 4: Small copy fixes
 
@@ -72,3 +72,4 @@
 
 - Task 1: RED confirmed (5 failures: premature result translation, no-done success, and child termination); GREEN: 35/35 scoped tests. Existing interrupt test and new iterator-abandonment test pass. Explicit error events also finish without signalling the child, as required by the terminal-event behavior.
 - Task 2: RED confirmed (4 failures: argument ordering and parsed-reply false stale detection); GREEN: 16/16 backend tests. Prompt is after `--`; stale detection remains active on stderr and non-JSON stdout only.
+- Task 3: RED confirmed (missing shared helper and tutor crons surviving both confirmed switches); GREEN: 19/19 scoped tests, including real in-memory SQLite checks for cron deletion and tutor/session preservation. Claude→Codex and cancellation already passed before implementation. No existing yes-branch test existed, so added the planned `switch-confirm.test.ts`.
