@@ -5,7 +5,7 @@ import { L } from "../../utils/i18n.js";
 
 export const data = new SlashCommandBuilder()
   .setName("effort")
-  .setDescription("Show or set Claude's reasoning effort for this channel")
+  .setDescription("Show or set the reasoning effort for this channel (Claude / DeepTutor)")
   .addStringOption((opt) =>
     opt
       .setName("level")

@@ -145,7 +145,7 @@ DeepTutor 的學習路徑（知識點 + 掌握度 + 到期複習）是每日內�
 2. `src/agent/deeptutor-backend.ts`：`AgentBackend` 實作，spawn `deeptutor run mastery_path <prompt> [--session <id>] --format json`，
    逐行解析；session id 以 `tutors` 表為準（見 Decisions）。
 3. `tutors` 表 + `src/db/tutors.ts` CRUD。
-4. `Project.backend` 型別加入 `"deeptutor"`；`backend-factory.ts` 回傳 `DeepTutorBackend`；session-manager 對 deeptutor 不傳 Claude model/effort。
+4. `Project.backend` 型別加入 `"deeptutor"`；`backend-factory.ts` 回傳 `DeepTutorBackend`；session-manager 對 deeptutor 傳頻道 `/model`、`/effort` 值（未設定則不傳）。
 5. `wakeUp` 對 `deeptutor` backend 不加 Claude preamble。
 6. `/tutor` 斜線指令：`setup`、`show`、`reset`、`pause`（見 Decisions）。
 7. 推播時間 → UTC cron 換算 + 每日 / 每週兩筆 `crons` 列（`name` 標記 `tutor:daily` / `tutor:weekly`）。
@@ -175,6 +175,7 @@ DeepTutor 的學習路徑（知識點 + 掌握度 + 到期複習）是每日內�
 - 我的決定：session 保護 —— backend 以 `tutors.deeptutor_session_id` 為準，忽略 `opts.resumeSessionId`；`isResumeStaleError` 恆 `false`，避免 session-manager 的「resume 失敗就開新 session」路徑讓家教失憶。
 - 我的決定：時區不改 `cron/parser.ts`（避免動既有排程語意），在 `/tutor setup` 時把當地時間換成 UTC cron；預設 `Asia/Taipei`。有夏令時間的時區會在換季後偏一小時（`ponytail:` 註解標明上限與升級路徑：替 crons 加 tz 欄位）。
 - 我的決定：`/tutor setup` 參數：`subject`（必填）、`goal`（必填）、`level`、`deadline`、`daily_minutes`、`menu`、`time`（預設 `08:00`）、`timezone`（預設 `Asia/Taipei`）、`language`（DeepTutor `-l`，預設 `zh`）。每週報告固定週日同一時間。
+- 使用者決定（2026-11-08，PR 審查期間追加）：每個家教頻道可用 `/model` 各自設定模型。bot 把 `projects.model` 以 `--model <name>` 傳給 `deeptutor run`（需要 DeepTutor 端 `run --model`，依名稱對應 model catalog 中的 `{profile_id, model_id}`）；未設定時沿用 DeepTutor 自己的預設模型。`/effort` 同理以 `--effort <level>` 傳入（DeepTutor 端寫進 `llm_selection.reasoning_effort`）。
 - 我的決定：`DEEPTUTOR_BIN` 環境變數（預設 `deeptutor`），加入 `src/utils/config.ts` 為可選。
 - 我的決定：每週預估分數由家教粗估並標明「粗估」。
 - 我的決定：頻道必須先 `/register`（沿用既有專案綁定；`cwd` = 專案目錄）；`/tutor setup` 在未註冊頻道上回覆錯誤。

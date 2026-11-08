@@ -11,6 +11,8 @@ import { L } from "../../utils/i18n.js";
 // they stay current across SDK updates. Any full model id can be typed too.
 const SUGGESTIONS = ["default", "opus", "sonnet", "haiku"];
 export const CODEX_MODELS = ["default", "gpt-6.1-sol", "gpt-6-astra"];
+// DeepTutor resolves these against its own model catalog (`deeptutor run --model`).
+const DEEPTUTOR_MODELS = ["default", "sonnet", "opus", "haiku"];
 
 export const data = new SlashCommandBuilder()
   .setName("model")
@@ -18,7 +20,7 @@ export const data = new SlashCommandBuilder()
   .addStringOption((opt) =>
     opt
       .setName("name")
-      .setDescription("A model id for Claude or Codex, or 'default' to reset")
+      .setDescription("A model id for Claude, Codex or DeepTutor, or 'default' to reset")
       .setAutocomplete(true)
       .setMaxLength(100),
   );
@@ -27,7 +29,7 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
   const typed = interaction.options.getFocused().toLowerCase();
   const project = getProject(interaction.channelId);
   const last = project?.last_model;
-  const suggestions = project?.backend === "codex" ? CODEX_MODELS : SUGGESTIONS;
+  const suggestions = project?.backend === "codex" ? CODEX_MODELS : project?.backend === "deeptutor" ? DEEPTUTOR_MODELS : SUGGESTIONS;
   const compatibleLast = last && (project?.backend === "codex" ? !last.startsWith("claude") : !last.startsWith("gpt-"));
   const options = [...new Set([...suggestions, ...(compatibleLast ? [last] : [])])]
     .filter((v) => v.toLowerCase().includes(typed));
@@ -51,7 +53,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     setChannelOverride(interaction.channelId, isCodex ? "codex_model" : "model", override);
   }
 
-  const effective = override ?? (isCodex ? "Codex config" : getConfig().CLAUDE_MODEL ?? "default");
+  const isDeepTutor = project.backend === "deeptutor";
+  const effective = override ?? (isCodex ? "Codex config" : isDeepTutor ? "DeepTutor config" : getConfig().CLAUDE_MODEL ?? "default");
   const lines = [
     `${L("Model", "모델")}: \`${effective}\``,
     project.last_model ? `${L("Last used", "마지막 사용")}: \`${project.last_model}\`` : "",
@@ -60,6 +63,6 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   ].filter(Boolean);
 
   await interaction.editReply({
-    embeds: [{ title: `🧠 ${isCodex ? "Codex" : "Claude"} ${L("Model", "모델")}`, description: lines.join("\n"), color: 0x7c3aed }],
+    embeds: [{ title: `🧠 ${isCodex ? "Codex" : isDeepTutor ? "DeepTutor" : "Claude"} ${L("Model", "모델")}`, description: lines.join("\n"), color: 0x7c3aed }],
   });
 }
