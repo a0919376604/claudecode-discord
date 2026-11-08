@@ -234,6 +234,19 @@ describe("flushStreamBuffer", () => {
 });
 
 describe("SessionManager.wakeUp", () => {
+  beforeEach(() => { vi.mocked(getProjectMock).mockReturnValue(undefined); });
+
+  it("deeptutor channel gets the raw prompt without preamble", async () => {
+    vi.mocked(getProjectMock).mockReturnValue({
+      channel_id: "tutor-ch", project_path: "/tmp/project", guild_id: "g", auto_approve: 0,
+      source_path: null, backend: "deeptutor", created_at: "",
+    });
+    const calls: { prompt: string }[] = [];
+    sessionManager.sendMessage = async (_channel, prompt) => { calls.push({ prompt }); };
+    await sessionManager.wakeUp(mockChannel("tutor-ch"), "daily push", "cron");
+    expect(calls[0].prompt).toBe("daily push");
+  });
+
   it("delegates to sendMessage with the synthesized prompt", async () => {
     const calls: { channelId: string; prompt: string }[] = [];
     sessionManager.sendMessage = async (channel: { id: string }, prompt: string) => {

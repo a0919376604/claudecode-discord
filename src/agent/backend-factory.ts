@@ -2,6 +2,7 @@ import { getProject } from "../db/database.js";
 import type { AgentBackend } from "./backend.js";
 import { ClaudeBackend } from "./claude-backend.js";
 import { CodexBackend } from "./codex-backend.js";
+import { DeepTutorBackend } from "./deeptutor-backend.js";
 
 /**
  * Returns the AgentBackend for a channel. Reads `project.backend` from DB.
@@ -9,6 +10,7 @@ import { CodexBackend } from "./codex-backend.js";
  */
 export function getBackend(channelId: string): AgentBackend {
   const project = getProject(channelId);
+  if (project?.backend === "deeptutor") return new DeepTutorBackend();
   if (project?.backend === "codex") return new CodexBackend();
   return new ClaudeBackend();
 }

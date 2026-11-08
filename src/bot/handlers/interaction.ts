@@ -13,6 +13,7 @@ import { sessionManager } from "../../claude/session-manager.js";
 import { upsertSession, getProject, getSession, clearSessionId, setBackend } from "../../db/database.js";
 import { findSessionFile, getLastAssistantMessage } from "../commands/sessions.js";
 import { detectCodex } from "../../agent/codex-detect.js";
+import { deleteTutorCrons } from "../commands/tutor.js";
 import { L } from "../../utils/i18n.js";
 import { formatTaskDetail } from "../../claude/task-board.js";
 
@@ -54,13 +55,19 @@ export async function handleButtonInteraction(
     }
 
     // decision === "yes"
+    const leavingTutor = getProject(channelId)?.backend === "deeptutor";
     clearSessionId(channelId);
     setBackend(channelId, target);
+    if (leavingTutor) deleteTutorCrons(channelId);
+    const tutorPauseNotice = leavingTutor ? L(
+      " Tutor pushes paused. Run /tutor setup to resume.",
+      " 튜터 알림이 일시정지되었습니다. /tutor setup으로 재개하세요.",
+    ) : "";
 
     if (target === "codex") {
       const detect = await detectCodex();
       if (!detect.ok) {
-        await interaction.update({ content: detect.errorMessage, components: [] });
+        await interaction.update({ content: detect.errorMessage + tutorPauseNotice, components: [] });
         return;
       }
     }
@@ -70,7 +77,7 @@ export async function handleButtonInteraction(
       content: L(
         `✅ Switched to ${displayName}. Next message will start a fresh session.`,
         `✅ ${displayName}로 전환됨. 다음 메시지부터 새 세션을 시작합니다.`,
-      ),
+      ) + tutorPauseNotice,
       components: [],
     });
     return;

@@ -83,4 +83,14 @@ describe("createSwitchBackendCommand", () => {
     expect(call.components).toBeDefined();
     expect(call.content).toContain("Continue?");
   });
+
+  it("switching from deeptutor names DeepTutor in the warning", async () => {
+    mockGetProject.mockReturnValue({
+      channel_id: "ch1", project_path: "/p", guild_id: "g", auto_approve: 0,
+      source_path: null, backend: "deeptutor", created_at: "",
+    });
+    const inter = makeInteraction();
+    await createSwitchBackendCommand("claude", "Claude").execute(inter);
+    expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("DeepTutor") }));
+  });
 });
