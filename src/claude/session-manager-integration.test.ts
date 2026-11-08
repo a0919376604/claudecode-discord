@@ -146,6 +146,16 @@ describe("SessionManager with MockAgentBackend", () => {
     expect(messages[0].content).toBe("");
   });
 
+  it("passes the channel /model override to the DeepTutor backend and no effort", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "deeptutor", model: "opus", effort: "high" });
+    testBackend.enqueueEvent({ type: "result", text: "", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(makeMockChannel(), "daily push");
+    expect(testBackend.lastStartOptions?.model).toBe("opus");
+    expect(testBackend.lastStartOptions?.effort).toBeUndefined();
+  });
+
   it("renders DeepTutor token deltas as prose followed by a separate question card", async () => {
     const { sessionManager } = await import("./session-manager.js");
     vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "deeptutor" });

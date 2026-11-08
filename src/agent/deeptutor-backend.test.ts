@@ -57,6 +57,14 @@ describe("DeepTutorBackend", () => {
     await collect(new DeepTutorBackend(), { ...opts, resumeSessionId: "other" });
     expect(spawn.mock.calls[0][1]).toEqual(["run", "mastery_path", "--format", "json", "-l", "zh", "--session", "s1", "--", "hello"]);
   });
+  it("passes the channel model as --model before --", async () => {
+    getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
+    child(p => p.stdout.write('{"type":"done"}\n'));
+    await collect(new DeepTutorBackend(), { ...opts, model: "opus" });
+    const args = spawn.mock.calls[0][1] as string[];
+    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "opus"]);
+    expect(args.indexOf("--model")).toBeLessThan(args.indexOf("--"));
+  });
   it('prompt starting with "-" is passed after --', async () => {
     getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
     child(p => p.stdout.write('{"type":"done"}\n'));

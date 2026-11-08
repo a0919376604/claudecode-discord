@@ -406,7 +406,7 @@ class SessionManager {
         skipPermissions: isSkipPermissionsEnabled(),
         channelId,
         channel,   // required field — see ledger Ruling R2 (Task 4 fix round 1)
-        model: project.backend === "deeptutor" ? undefined : project.backend === "codex" ? project.codex_model ?? undefined : project.model ?? getConfig().CLAUDE_MODEL,
+        model: project.backend === "deeptutor" ? project.model ?? undefined : project.backend === "codex" ? project.codex_model ?? undefined : project.model ?? getConfig().CLAUDE_MODEL,
         effort: project.backend === "claude" ? (project.effort ?? undefined) as EffortLevel | undefined : undefined,
       });
 

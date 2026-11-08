@@ -23,4 +23,20 @@ describe("/model", () => {
     await execute({ channelId: "ch", options: { getString: () => "default" }, editReply: vi.fn() } as never);
     expect(setChannelOverride).toHaveBeenCalledWith("ch", "codex_model", null);
   });
+  it("DeepTutor channels store the model, suggest Claude Code aliases and name DeepTutor", async () => {
+    vi.mocked(getProject).mockReturnValue({ backend: "deeptutor", model: null } as never);
+    const respond = vi.fn();
+    await autocomplete({ channelId: "ch", options: { getFocused: () => "" }, respond } as never);
+    expect(JSON.stringify(respond.mock.calls)).toContain("haiku");
+    const editReply = vi.fn();
+    await execute({ channelId: "ch", options: { getString: () => "opus" }, editReply } as never);
+    expect(setChannelOverride).toHaveBeenCalledWith("ch", "model", "opus");
+    expect(JSON.stringify(editReply.mock.calls)).toContain("DeepTutor");
+  });
+  it("DeepTutor default falls back to DeepTutor's own setting, not CLAUDE_MODEL", async () => {
+    vi.mocked(getProject).mockReturnValue({ backend: "deeptutor", model: null } as never);
+    const editReply = vi.fn();
+    await execute({ channelId: "ch", options: { getString: () => null }, editReply } as never);
+    expect(JSON.stringify(editReply.mock.calls)).toContain("DeepTutor config");
+  });
 });

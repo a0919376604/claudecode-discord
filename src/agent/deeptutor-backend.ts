@@ -19,6 +19,7 @@ export class DeepTutorBackend implements AgentBackend {
     const proc = spawn(bin, [
       "run", "mastery_path", "--format", "json", "-l", tutor.language,
       ...(tutor.deeptutor_session_id ? ["--session", tutor.deeptutor_session_id] : []),
+      ...(opts.model ? ["--model", opts.model] : []),
       "--", opts.prompt,
     ], { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
     this.proc = proc;
