@@ -163,11 +163,37 @@ describe("/tutor", () => {
     await execute(inter);
     expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("/tutor setup") }));
   });
-  it("registers the four subcommands and study-time bounds", () => {
+  it("registers the five subcommands and study-time bounds", () => {
     const schema = data.toJSON();
-    expect(schema.options?.map(option => option.name)).toEqual(["setup", "show", "pause", "reset"]);
+    expect(schema.options?.map(option => option.name)).toEqual(["setup", "time", "show", "pause", "reset"]);
     const setup = schema.options?.[0];
     if (setup?.type !== 1) throw new Error("missing setup subcommand");
     expect(setup.options?.find(option => option.name === "daily_minutes")).toMatchObject({ min_value: 5, max_value: 120 });
+  });
+  it("time changes only the push time and reschedules both tutor crons, keeping profile and session", async () => {
+    storedTutor = { ...configuredTutor, level: "N5", menu: "games", daily_minutes: 20 };
+    crons = [cron("d", "tutor:daily"), cron("w", "tutor:weekly"), cron("o", "other")];
+    project = { ...project, backend: "deeptutor" };
+    await execute(interaction("time", { time: "21:30" }));
+    expect(storedTutor).toMatchObject({ push_time: "21:30", timezone: "Asia/Taipei", level: "N5", menu: "games", daily_minutes: 20, deeptutor_session_id: "s1" });
+    expect(crons.map(c => [c.name, c.cron_expr])).toEqual([["other", "0 0 * * *"], ["tutor:daily", "30 13 * * *"], ["tutor:weekly", "30 13 * * 0"]]);
+    expect(sessionManager.sendMessage).not.toHaveBeenCalled();
+    expect(setBackend).not.toHaveBeenCalled();
+  });
+  it("time without a tutor replies with a setup hint and writes nothing", async () => {
+    const inter = interaction("time", { time: "21:30" });
+    await execute(inter);
+    expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("/tutor setup") }));
+    expectNoWrites();
+  });
+  it("time with an invalid time writes nothing", async () => {
+    storedTutor = { ...configuredTutor };
+    await execute(interaction("time", { time: "25:00" }));
+    expectNoWrites();
+  });
+  it("setup keeps existing optional settings when they are omitted", async () => {
+    storedTutor = { ...configuredTutor, level: "N5", deadline: "2027-05", daily_minutes: 20, menu: "games", push_time: "21:30", timezone: "Asia/Tokyo", language: "ja" };
+    await execute(interaction("setup"));
+    expect(storedTutor).toMatchObject({ level: "N5", deadline: "2027-05", daily_minutes: 20, menu: "games", push_time: "21:30", timezone: "Asia/Tokyo", language: "ja" });
   });
 });

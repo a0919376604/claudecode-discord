@@ -22,6 +22,9 @@ export const data = new SlashCommandBuilder()
     .addStringOption(o => o.setName("time").setDescription(L("Local push time, HH:MM (default 08:00)", "현지 알림 시간 HH:MM (기본 08:00)")))
     .addStringOption(o => o.setName("timezone").setDescription(L("Timezone (default Asia/Taipei)", "시간대 (기본 Asia/Taipei)")).setMaxLength(100))
     .addStringOption(o => o.setName("language").setDescription(L("DeepTutor language code (default zh)", "DeepTutor 언어 코드 (기본 zh)")).setMaxLength(100)))
+  .addSubcommand(sub => sub.setName("time").setDescription(L("Change only the daily push time", "매일 알림 시간만 변경"))
+    .addStringOption(o => o.setName("time").setDescription(L("Local push time, HH:MM", "현지 알림 시간 HH:MM")).setRequired(true))
+    .addStringOption(o => o.setName("timezone").setDescription(L("Timezone (default: keep current)", "시간대 (기본: 현재 유지)")).setMaxLength(100)))
   .addSubcommand(sub => sub.setName("show").setDescription(L("Show tutor settings and next pushes", "튜터 설정과 다음 알림 보기")))
   .addSubcommand(sub => sub.setName("pause").setDescription(L("Pause tutor pushes; setup resumes them", "튜터 알림 일시정지; setup으로 재개")))
   .addSubcommand(sub => sub.setName("reset").setDescription(L("Start a new learning path on the next message", "다음 메시지에서 새 학습 경로 시작")));
@@ -37,6 +40,27 @@ export function deleteTutorCrons(channelId: string): number {
   }
   return count;
 }
+
+/** Validates the time first; returns null (nothing written) when time/timezone is invalid. */
+function tutorCronExprs(time: string, timezone: string, now: number): { daily: string; weekly: string } | null {
+  try {
+    return { daily: localTimeToUtcCron(time, timezone, undefined, new Date(now)), weekly: localTimeToUtcCron(time, timezone, 0, new Date(now)) };
+  } catch {
+    return null;
+  }
+}
+
+function scheduleTutorCrons(tutor: Tutor, exprs: { daily: string; weekly: string }, now: number): CronRow[] {
+  deleteTutorCrons(tutor.channel_id);
+  const crons: CronRow[] = [
+    { id: randomUUID(), channel_id: tutor.channel_id, name: "tutor:daily", cron_expr: exprs.daily, prompt: buildDailyPrompt(tutor), next_fire: nextFireAfter(exprs.daily, now), last_fire: null, created_at: now },
+    { id: randomUUID(), channel_id: tutor.channel_id, name: "tutor:weekly", cron_expr: exprs.weekly, prompt: buildWeeklyPrompt(tutor), next_fire: nextFireAfter(exprs.weekly, now), last_fire: null, created_at: now },
+  ];
+  for (const cron of crons) insertCron(cron);
+  return crons;
+}
+
+const INVALID_TIME = () => L("❌ Invalid time or timezone. Use HH:MM and an IANA timezone such as Asia/Taipei.", "❌ 잘못된 시간 또는 시간대입니다. HH:MM 형식과 Asia/Taipei 같은 IANA 시간대를 사용하세요.");
 
 function tutorEmbed(tutor: Tutor, crons: CronRow[]): EmbedBuilder {
   const embed = new EmbedBuilder().setTitle(L("📚 DeepTutor tutor", "📚 DeepTutor 튜터")).setColor(0x5865f2)
@@ -70,16 +94,14 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       await interaction.editReply({ content: L("❌ A session is running. Use /stop first.", "❌ 세션이 실행 중입니다. 먼저 /stop을 사용하세요.") });
       return;
     }
-    const time = interaction.options.getString("time") ?? "08:00";
-    const timezone = interaction.options.getString("timezone") ?? "Asia/Taipei";
+    // Omitted optional fields keep the existing tutor's values, so re-running setup never wipes them.
+    const existing = getTutor(channelId);
+    const time = interaction.options.getString("time") ?? existing?.push_time ?? "08:00";
+    const timezone = interaction.options.getString("timezone") ?? existing?.timezone ?? "Asia/Taipei";
     const now = Date.now();
-    let daily: string;
-    let weekly: string;
-    try {
-      daily = localTimeToUtcCron(time, timezone, undefined, new Date(now));
-      weekly = localTimeToUtcCron(time, timezone, 0, new Date(now));
-    } catch {
-      await interaction.editReply({ content: L("❌ Invalid time or timezone. Use HH:MM and an IANA timezone such as Asia/Taipei.", "❌ 잘못된 시간 또는 시간대입니다. HH:MM 형식과 Asia/Taipei 같은 IANA 시간대를 사용하세요.") });
+    const exprs = tutorCronExprs(time, timezone, now);
+    if (!exprs) {
+      await interaction.editReply({ content: INVALID_TIME() });
       return;
     }
     const oldCrons = listCronsByChannel(channelId).filter(isTutorCron);
@@ -90,21 +112,18 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     upsertTutor({
       channel_id: channelId,
       subject: interaction.options.getString("subject", true), goal: interaction.options.getString("goal", true),
-      level: interaction.options.getString("level"), deadline: interaction.options.getString("deadline"),
-      daily_minutes: interaction.options.getInteger("daily_minutes"), menu: interaction.options.getString("menu"),
-      push_time: time, timezone, language: interaction.options.getString("language") ?? "zh",
+      level: interaction.options.getString("level") ?? existing?.level ?? null,
+      deadline: interaction.options.getString("deadline") ?? existing?.deadline ?? null,
+      daily_minutes: interaction.options.getInteger("daily_minutes") ?? existing?.daily_minutes ?? null,
+      menu: interaction.options.getString("menu") ?? existing?.menu ?? null,
+      push_time: time, timezone, language: interaction.options.getString("language") ?? existing?.language ?? "zh",
     });
     const tutor = getTutor(channelId)!;
     if (project.backend !== "deeptutor") {
       clearSessionId(channelId);
       setBackend(channelId, "deeptutor");
     }
-    deleteTutorCrons(channelId);
-    const crons: CronRow[] = [
-      { id: randomUUID(), channel_id: channelId, name: "tutor:daily", cron_expr: daily, prompt: buildDailyPrompt(tutor), next_fire: nextFireAfter(daily, now), last_fire: null, created_at: now },
-      { id: randomUUID(), channel_id: channelId, name: "tutor:weekly", cron_expr: weekly, prompt: buildWeeklyPrompt(tutor), next_fire: nextFireAfter(weekly, now), last_fire: null, created_at: now },
-    ];
-    for (const cron of crons) insertCron(cron);
+    const crons = scheduleTutorCrons(tutor, exprs, now);
     await interaction.editReply({ embeds: [tutorEmbed(tutor, crons)] });
     if (!tutor.deeptutor_session_id) {
       void sessionManager.sendMessage(interaction.channel as TextChannel, buildIntakePrompt(tutor))
@@ -120,6 +139,21 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const tutor = getTutor(channelId);
   if (!tutor) {
     await interaction.editReply({ content: L("No tutor configured. Run /tutor setup first.", "설정된 튜터가 없습니다. 먼저 /tutor setup을 실행하세요.") });
+    return;
+  }
+  if (sub === "time") {
+    const time = interaction.options.getString("time", true);
+    const timezone = interaction.options.getString("timezone") ?? tutor.timezone;
+    const now = Date.now();
+    const exprs = tutorCronExprs(time, timezone, now);
+    if (!exprs) {
+      await interaction.editReply({ content: INVALID_TIME() });
+      return;
+    }
+    const { deeptutor_session_id: _s, created_at: _c, ...profile } = tutor;
+    upsertTutor({ ...profile, push_time: time, timezone });
+    const updated = getTutor(channelId)!;
+    await interaction.editReply({ embeds: [tutorEmbed(updated, scheduleTutorCrons(updated, exprs, now))] });
     return;
   }
   if (sub === "show") {
