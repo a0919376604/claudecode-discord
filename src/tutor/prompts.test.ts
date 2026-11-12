@@ -10,13 +10,13 @@ const tutor: Tutor = {
 describe("tutor prompts", () => {
   it("intake records profile, builds an outline and starts placement without ask_user", () => {
     const prompt = buildIntakePrompt(tutor);
-    for (const text of ["English", "IELTS 7", "B1", "2027-01-01", "20", "Vocabulary and grammar", "mastery_profile", "mastery_build", "placement", "do not use ask_user", "plain text", "next message"]) {
+    for (const text of ["English", "IELTS 7", "B1", "2027-01-01", "20", "Vocabulary and grammar", "mastery_profile", "mastery_build", "placement", "3-5 questions", "teach_first", "summary", "do not use ask_user", "plain text", "next message"]) {
       expect(prompt).toContain(text);
     }
   });
   it("daily combines review with progress toward the next goal objective", () => {
     const prompt = buildDailyPrompt(tutor);
-    for (const text of ["mastery_status", "mastery_quiz", "advance at least one step toward the next goal objective", "mastery_defer_objective", "20 minutes", "mobile-friendly", "preference", "do not use ask_user"]) {
+    for (const text of ["mastery_status", "mastery_quiz", "Teach first", "game", "summary", "advance at least one step toward the next goal objective", "mastery_defer_objective", "20 minutes", "mobile-friendly", "preference", "do not use ask_user"]) {
       expect(prompt).toContain(text);
     }
   });

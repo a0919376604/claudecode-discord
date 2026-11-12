@@ -63,6 +63,9 @@ export class DeepTutorBackend implements AgentBackend {
       "이 튜터의 DeepTutor 세션이 없습니다 — /tutor reset으로 새 학습 경로를 시작하세요.",
     );
     let sessionSeen = false;
+    // Saved only after a successful `done`: a failed first turn (e.g. no LLM configured)
+    // must not pin the channel to a path whose intake never ran.
+    let newSessionId: string | undefined;
     const cards = new Set<string>();
     try {
       while (true) {
@@ -77,7 +80,7 @@ export class DeepTutorBackend implements AgentBackend {
           const id = mapped.find(e => e.type === "session_init")?.sessionId ?? raw?.session_id;
           if (!sessionSeen && typeof id === "string" && id) {
             sessionSeen = true;
-            if (!tutor.deeptutor_session_id) setTutorSession(opts.channelId, id);
+            newSessionId = id;
             yield { type: "session_init", sessionId: id };
           }
           const metadata = raw?.metadata as { tool_metadata?: { mastery_question?: unknown } } | undefined;
@@ -90,6 +93,7 @@ export class DeepTutorBackend implements AgentBackend {
             }
             if (event.type === "result") {
               terminalEventSeen = true;
+              if (!event.isError && !stale && newSessionId && !tutor.deeptutor_session_id) setTutorSession(opts.channelId, newSessionId);
               reader.close();
               proc.unref();
               yield stale ? { type: "result", isError: true, text: staleMessage() } : event;

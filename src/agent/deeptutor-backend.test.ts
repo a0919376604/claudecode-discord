@@ -51,6 +51,15 @@ describe("DeepTutorBackend", () => {
     expect(spawn).toHaveBeenCalledWith("deeptutor", ["run", "mastery_path", "--format", "json", "-l", "zh", "--", "hello"], { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
     expect(setTutorSession.mock.calls).toEqual([["ch", "s9"]]);
   });
+  it("a failed first turn does not store the session id, so setup can resend the intake", async () => {
+    child(p => p.stdout.write([
+      { type: "session", metadata: { session_id: "s9" }, session_id: "s9" },
+      { type: "error", content: "No active LLM model is configured.", session_id: "s9" },
+    ].map(e => JSON.stringify(e)).join("\n") + "\n"));
+    const events = await collect();
+    expect(events.at(-1)).toMatchObject({ type: "result", isError: true });
+    expect(setTutorSession).not.toHaveBeenCalled();
+  });
   it("resumes with stored session id and ignores opts.resumeSessionId", async () => {
     getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });
     child(p => p.stdout.write('{"type":"done"}\n'));

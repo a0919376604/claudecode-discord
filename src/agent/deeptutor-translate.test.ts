@@ -52,4 +52,20 @@ describe("formatQuestionCard", () => {
   it.each([null, {}, { prompt: 12 }, { prompt: "" }, { prompt: "ok", options: [{ label: "A" }] }])("rejects invalid card %j", (input) => {
     expect(formatQuestionCard(input)).toBeNull();
   });
+  it("renders a wrong-answer grade card with the correct option, feedback and mastery", () => {
+    const events = translateDeepTutorEvent({ type: "tool_result", metadata: { tool: "mastery_grade", tool_metadata: { mastery_grade: {
+      is_correct: false, mastery: 0.643, threshold: 0.9, mastered: false,
+      result: { correct_label: "A", correct_body: "me", feedback: "め has no loop.", explanation: "め has no loop." },
+    } } } });
+    const text = events.filter(e => e.type === "text_delta").map(e => e.text).join("");
+    for (const part of ["❌", "A. me", "め has no loop.", "64%", "90%"]) expect(text).toContain(part);
+    expect(text.match(/め has no loop\./g)).toHaveLength(1);
+  });
+  it("renders a correct grade card and flags a mastered objective", () => {
+    const events = translateDeepTutorEvent({ type: "tool_result", metadata: { tool: "mastery_grade", tool_metadata: { mastery_grade: {
+      is_correct: true, mastery: 0.92, threshold: 0.9, mastered: true, result: { explanation: "ね has a loop." },
+    } } } });
+    const text = events.filter(e => e.type === "text_delta").map(e => e.text).join("");
+    for (const part of ["✅", "ね has a loop.", "92%", "🎉"]) expect(text).toContain(part);
+  });
 });

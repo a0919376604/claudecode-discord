@@ -22,6 +22,25 @@ export function formatQuestionCard(card: unknown): string | null {
   return lines.join("\n");
 }
 
+const pct = (value: unknown) => typeof value === "number" ? `${Math.round(value * 100)}%` : null;
+
+/** DeepTutor shows the verdict on its own web answer card and tells the model not to restate it, so render it here. */
+export function formatGradeCard(grade: unknown): string | null {
+  const g = object(grade);
+  if (typeof g.is_correct !== "boolean") return null;
+  const r = object(g.result);
+  const answer = typeof r.correct_label === "string" && typeof r.correct_body === "string" ? `${r.correct_label}. ${r.correct_body}` : null;
+  const lines = [g.is_correct
+    ? L("✅ Correct", "✅ 정답")
+    : `${L("❌ Incorrect", "❌ 오답")}${answer ? ` — ${L("answer", "정답")}: ${answer}` : ""}`];
+  const note = [r.feedback, r.explanation].find(v => typeof v === "string" && v.trim()) as string | undefined;
+  if (note) lines.push(note);
+  const mastery = pct(g.mastery);
+  if (mastery) lines.push(`${L("Mastery", "숙련도")} ${mastery}${pct(g.threshold) ? ` → ${L("goal", "목표")} ${pct(g.threshold)}` : ""}`);
+  if (g.mastered === true) lines.push(L("🎉 Objective mastered", "🎉 목표 달성"));
+  return lines.join("\n");
+}
+
 export function translateDeepTutorEvent(ev: unknown): NormalizedEvent[] {
   const e = object(ev);
   const metadata = object(e.metadata);
@@ -48,6 +67,10 @@ export function translateDeepTutorEvent(ev: unknown): NormalizedEvent[] {
     case "done":
       events.push({ type: "result", text: content, isError: false });
       break;
+  }
+  if (e.type === "tool_result") {
+    const grade = formatGradeCard(object(metadata.tool_metadata).mastery_grade);
+    if (grade) events.push({ type: "text_delta", text: grade });
   }
   if (e.type === "content" || e.type === "tool_result") {
     const text = formatQuestionCard(object(metadata.tool_metadata).mastery_question);
