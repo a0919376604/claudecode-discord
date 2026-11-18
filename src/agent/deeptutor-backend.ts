@@ -7,10 +7,32 @@ import { getConfig } from "../utils/config.js";
 import { ensureFreshCredentials } from "../claude/credentials-refresher.js";
 import { L } from "../utils/i18n.js";
 
+const CLAUDE_AUTH_ERROR = /Failed to authenticate|OAuth session expired|authentication_error|not logged in|\b401\b/i;
+
 export class DeepTutorBackend implements AgentBackend {
   private proc: ChildProcess | null = null;
 
+  /**
+   * Runs once; if Claude auth fails before anything reached the channel and
+   * DEEPTUTOR_FALLBACK_MODEL is set, retries once on that model (e.g. Codex).
+   */
   async *start(opts: BackendStartOptions): AsyncIterableIterator<NormalizedEvent> {
+    const fallback = getConfig().DEEPTUTOR_FALLBACK_MODEL;
+    let shownOutput = false;
+    for await (const event of this.runOnce(opts)) {
+      if (event.type === "result" && event.isError && !shownOutput && fallback && fallback !== opts.model
+          && CLAUDE_AUTH_ERROR.test(event.text)) {
+        yield { type: "text_delta", text: L(`⚠️ Claude sign-in failed — retrying with ${fallback}.`, `⚠️ Claude 인증 실패 — ${fallback}(으)로 다시 시도합니다.`) };
+        // Effort levels are provider-specific, so the fallback runs with the model's default.
+        yield* this.runOnce({ ...opts, model: fallback, effort: undefined });
+        return;
+      }
+      if (event.type === "text_delta") shownOutput = true;
+      yield event;
+    }
+  }
+
+  private async *runOnce(opts: BackendStartOptions): AsyncIterableIterator<NormalizedEvent> {
     const tutor = getTutor(opts.channelId);
     if (!tutor) {
       yield { type: "result", isError: true, text: L("No tutor configured for this channel — run /tutor setup", "이 채널에 튜터가 없습니다 — /tutor setup을 실행하세요") };

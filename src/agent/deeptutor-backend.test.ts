@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { BackendStartOptions, NormalizedEvent } from "./backend.js";
@@ -8,7 +8,8 @@ const { spawn, getTutor, setTutorSession, ensureFreshCredentials } = vi.hoisted(
 vi.mock("../claude/credentials-refresher.js", () => ({ ensureFreshCredentials }));
 vi.mock("node:child_process", () => ({ spawn }));
 vi.mock("../db/tutors.js", () => ({ getTutor, setTutorSession }));
-vi.mock("../utils/config.js", () => ({ getConfig: () => ({ DEEPTUTOR_BIN: "deeptutor" }) }));
+const config = vi.hoisted(() => ({ DEEPTUTOR_BIN: "deeptutor", DEEPTUTOR_FALLBACK_MODEL: undefined as string | undefined }));
+vi.mock("../utils/config.js", () => ({ getConfig: () => config }));
 import { DeepTutorBackend } from "./deeptutor-backend.js";
 
 const tutor: Tutor = {
@@ -182,5 +183,47 @@ describe("DeepTutorBackend", () => {
     await backend.interrupt();
     for await (const _event of stream) { /* drain */ }
     expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+  describe("Codex fallback", () => {
+    const authFail = '{"type":"error","content":"Error calling Claude Code: Failed to authenticate: OAuth session expired and could not be refreshed"}\n';
+    function children(...runs: Array<(p: ReturnType<typeof makeChild>) => void>) {
+      for (const run of runs) {
+        const proc = makeChild();
+        spawn.mockImplementationOnce(() => { setImmediate(() => run(proc)); return proc; });
+      }
+    }
+    beforeEach(() => { spawn.mockReset(); config.DEEPTUTOR_FALLBACK_MODEL = "gpt-6.1-sol"; });
+    afterEach(() => { config.DEEPTUTOR_FALLBACK_MODEL = undefined; });
+
+    it("reruns once with the fallback model when Claude auth fails before any output", async () => {
+      children(p => p.stdout.write(authFail), p => p.stdout.write('{"type":"content","content":"Hi"}\n{"type":"done"}\n'));
+      const events = await collect(new DeepTutorBackend(), { ...opts, model: "opus", effort: "high" });
+      expect(spawn).toHaveBeenCalledTimes(2);
+      const retryArgs = spawn.mock.calls[1][1] as string[];
+      expect(retryArgs.slice(retryArgs.indexOf("--model"), retryArgs.indexOf("--model") + 2)).toEqual(["--model", "gpt-6.1-sol"]);
+      expect(retryArgs).not.toContain("--effort");
+      const texts = events.filter(e => e.type === "text_delta").map(e => (e as { text: string }).text);
+      expect(texts[0]).toContain("gpt-6.1-sol");
+      expect(texts).toContain("Hi");
+      expect(events.filter(e => e.type === "result")).toEqual([{ type: "result", text: "", isError: false }]);
+    });
+    it("does not fall back for non-auth errors", async () => {
+      children(p => p.stdout.write('{"type":"error","content":"boom"}\n'));
+      const events = await collect();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toMatchObject({ type: "result", isError: true, text: "boom" });
+    });
+    it("does not fall back once output was already shown", async () => {
+      children(p => p.stdout.write('{"type":"content","content":"partial"}\n' + authFail));
+      const events = await collect();
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toMatchObject({ type: "result", isError: true });
+    });
+    it("is off when no fallback model is configured", async () => {
+      config.DEEPTUTOR_FALLBACK_MODEL = undefined;
+      children(p => p.stdout.write(authFail));
+      await collect();
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
   });
 });

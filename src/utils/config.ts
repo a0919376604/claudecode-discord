@@ -12,6 +12,8 @@ const envSchema = z.object({
     .transform((v) => v.split(",").map((id) => id.trim())),
   BASE_PROJECT_DIR: z.string().min(1, "BASE_PROJECT_DIR is required"),
   DEEPTUTOR_BIN: z.string().default("deeptutor"),
+  // DeepTutor catalog model to retry with when Claude auth fails (e.g. an openai_codex model). Unset = no fallback.
+  DEEPTUTOR_FALLBACK_MODEL: z.string().optional().transform((v) => (v && v.trim() ? v.trim() : undefined)),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(10),
   SHOW_COST: z
     .enum(["true", "false"])
