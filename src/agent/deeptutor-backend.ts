@@ -4,6 +4,7 @@ import type { AgentBackend, BackendStartOptions, NormalizedEvent } from "./backe
 import { formatQuestionCard, translateDeepTutorEvent } from "./deeptutor-translate.js";
 import { getTutor, setTutorSession } from "../db/tutors.js";
 import { getConfig } from "../utils/config.js";
+import { ensureFreshCredentials } from "../claude/credentials-refresher.js";
 import { L } from "../utils/i18n.js";
 
 export class DeepTutorBackend implements AgentBackend {
@@ -15,6 +16,9 @@ export class DeepTutorBackend implements AgentBackend {
       yield { type: "result", isError: true, text: L("No tutor configured for this channel — run /tutor setup", "이 채널에 튜터가 없습니다 — /tutor setup을 실행하세요") };
       return;
     }
+    // DeepTutor's claude_code provider reads the same keychain token; refresh it first like
+    // ClaudeBackend does, or scheduled pushes after an overnight sleep hit an expired token.
+    await ensureFreshCredentials();
     const bin = getConfig().DEEPTUTOR_BIN;
     const proc = spawn(bin, [
       "run", "mastery_path", "--format", "json", "-l", tutor.language,

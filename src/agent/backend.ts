@@ -4,7 +4,9 @@ import type { AskQuestionData } from "../claude/output-formatter.js";
 export type NormalizedEvent =
   | { type: "plan_update"; steps: Array<{ step: string; status: "pending" | "inProgress" | "completed" }> }
   | { type: "session_init"; sessionId: string; model?: string }
-  | { type: "text_delta"; text: string; isReasoning?: boolean }
+  | { type: "text_delta"; text: string; isReasoning?: boolean; itemId?: string; phase?: string }
+  | { type: "text_complete"; itemId: string; text: string; phase?: string }
+  | { type: "tool_output_delta"; itemId: string; text: string }
   | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
   | { type: "tool_end"; toolName: string; ok: boolean; input?: Record<string, unknown> }
   // Full set of live background tasks (REPLACE semantics).

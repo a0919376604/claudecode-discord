@@ -60,7 +60,7 @@ describe("CodexBackend lifecycle", () => {
     for await (const event of new CodexBackend().start(opts)) events.push(event);
     expect(events).toEqual([
       { type: "session_init", sessionId: "thread-1", model: "actual-codex-model" },
-      { type: "text_delta", text: "Parent continues" },
+      { type: "text_delta", text: "Parent continues", itemId: "p1" },
       { type: "result", text: "Parent continues", isError: false },
     ]);
     expect(proc.kill).toHaveBeenCalledOnce();

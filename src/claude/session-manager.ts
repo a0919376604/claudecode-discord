@@ -32,7 +32,7 @@ import { WakeupPayloadSchema } from "../wakeup/types.js";
 import type { AgentBackend } from "../agent/backend.js";
 import { getBackend } from "../agent/backend-factory.js";
 import { formatToolActivity } from "./tool-activity.js";
-import { CodexTaskCard } from "./codex-task-card.js";
+import { CodexConversation } from "./codex-conversation.js";
 
 /**
  * After Claude has streamed any text, the original Discord message holds real
@@ -149,7 +149,7 @@ const pendingCustomInputs = new Map<string, { requestId: string }>();
 
 class SessionManager {
   private sessions = new Map<string, ActiveSession>();
-  private cards = new Map<string, { card: CodexTaskCard; prompt: string; projectPath: string; recovering?: boolean }>();
+  private cards = new Map<string, { card: CodexConversation; prompt: string; projectPath: string; recovering?: boolean }>();
   private static readonly MAX_QUEUE_SIZE = 5;
   private messageQueue = new Map<string, { channel: TextChannel; prompt: string }[]>();
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string }>();
@@ -177,7 +177,7 @@ class SessionManager {
     const pendingAbort = new AbortController();
     let finishSession!: () => void;
     const finished = new Promise<void>(resolve => { finishSession = resolve; });
-    const card = project.backend === "codex" ? new CodexTaskCard(runId, prompt) : undefined;
+    const card = project.backend === "codex" ? new CodexConversation(runId, prompt, channel) : undefined;
     if (card) this.cards.set(channelId, { card, prompt, projectPath: project.project_path });
     else this.cards.delete(channelId);
 
@@ -429,7 +429,7 @@ class SessionManager {
         try {
           for await (const event of eventStream) {
             if (pendingAbort.signal.aborted && event.type !== "result") continue;
-            card?.observe(event);
+            await card?.observe(event);
             switch (event.type) {
               case "plan_update": break;
               case "session_init": {
@@ -454,6 +454,10 @@ class SessionManager {
               }
 
               case "text_delta": {
+                if (card) {
+                  if (!event.isReasoning) hasTextOutput = true;
+                  break;
+                }
                 if (event.isReasoning) {
                   lastActivity = L("Thinking...", "생각 중...");
                   break;
@@ -486,6 +490,7 @@ class SessionManager {
               }
 
               case "tool_start": {
+                if (card) break;
                 toolUseCount++;
                 lastToolId = event.input.id;
                 lastActivity = formatToolActivity(event.toolName, event.input);
@@ -519,27 +524,27 @@ class SessionManager {
                   card?.clearNeed(event.requestId);
                   board?.clearNeedsYou(event.requestId);
                   scheduleBoard();
+                  void approvalMsg.edit({ components: [] }).catch(() => {});
                 };
-                const timeout = setTimeout(() => {
+                let settled = false;
+                const complete = (decision: { behavior: "allow" | "deny"; message?: string }) => {
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timeout);
+                  pendingAbort.signal.removeEventListener("abort", cancel);
                   clearNeed();
                   pendingApprovals.delete(event.requestId);
-                  updateSessionStatus(channelId, "online");
-                  backend.respondToApproval(event.requestId, "deny", "Approval timed out");
-                }, 5 * 60 * 1000);
+                  if (!pendingAbort.signal.aborted) updateSessionStatus(channelId, "online");
+                  backend.respondToApproval(event.requestId, decision.behavior, decision.message);
+                };
+                const cancel = () => complete({ behavior: "deny", message: "Task stopped" });
+                const timeout = setTimeout(() => complete({ behavior: "deny", message: "Approval timed out" }), 5 * 60 * 1000);
                 pendingApprovals.set(event.requestId, {
-                  resolve: (decision) => {
-                    clearTimeout(timeout);
-                    clearNeed();
-                    pendingApprovals.delete(event.requestId);
-                    updateSessionStatus(channelId, "online");
-                    backend.respondToApproval(
-                      event.requestId,
-                      decision.behavior === "allow" ? "allow" : "deny",
-                      decision.message,
-                    );
-                  },
+                  resolve: complete,
                   channelId,
                 });
+                pendingAbort.signal.addEventListener("abort", cancel, { once: true });
+                if (pendingAbort.signal.aborted) cancel();
                 break;
               }
 
@@ -637,10 +642,18 @@ class SessionManager {
                 break;
 
               case "tool_end":
+                if (card) break;
                 if (event.input && (lastToolId === undefined || lastToolId === event.input.id)) {
                   lastActivity = formatToolActivity(event.toolName, event.input, event.ok);
                   await surfaceProgress(project.backend === "codex");
                 }
+                break;
+
+              case "text_complete":
+                if (card && event.text) hasTextOutput = true;
+                break;
+
+              case "tool_output_delta":
                 break;
 
               case "result": {
@@ -655,7 +668,6 @@ class SessionManager {
                 }
                 const isError = event.isError;
                 const resultText = event.text;
-                if (card && !hasTextOutput && !isError && resultText) responseBuffer = resultText;
                 if (responseBuffer.length > 0) {
                   try {
                     await flushText();
@@ -777,6 +789,7 @@ class SessionManager {
       updateSessionStatus(channelId, "offline");
     } finally {
       try {
+        pendingAbort.abort();
         clearInterval(heartbeatInterval);
         if (toolProgressTimer) clearTimeout(toolProgressTimer);
         if (durationTimer) clearTimeout(durationTimer);
@@ -965,7 +978,7 @@ class SessionManager {
     return this.sessions.has(channelId);
   }
 
-  getTaskCard(channelId: string, runId: string): CodexTaskCard | undefined {
+  getTaskCard(channelId: string, runId: string): CodexConversation | undefined {
     const task = this.cards.get(channelId);
     return task?.card.runId === runId ? task.card : undefined;
   }

@@ -108,6 +108,49 @@ describe("SessionManager with MockAgentBackend", () => {
     b.pendingQuestions = new Map();
   });
 
+  it("keeps the final commentary tokens before the tools, shows output, then starts a new answer", async () => {
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "text_delta", itemId: "intro", text: "Checking " });
+    testBackend.enqueueEvent({ type: "text_delta", itemId: "intro", text: "the tests." });
+    testBackend.enqueueEvent({ type: "tool_start", toolName: "Bash", input: { id: "cmd", command: "npm test" } });
+    testBackend.enqueueEvent({ type: "tool_output_delta", itemId: "cmd", text: "12 tests passed" });
+    testBackend.enqueueEvent({ type: "tool_end", toolName: "Bash", input: { id: "cmd" }, ok: true });
+    testBackend.enqueueEvent({ type: "text_complete", itemId: "answer", text: "All checks passed." });
+    testBackend.enqueueEvent({ type: "result", text: "Checking the tests.All checks passed.", isError: false });
+    testBackend.endStream();
+    await sessionManager.sendMessage(channel, "test");
+    const messages = (channel as unknown as { messages: Array<{ content: string; embeds?: unknown[] }> }).messages;
+    expect(messages[0].content).toBe("Checking the tests.");
+    expect(JSON.stringify(messages[1].embeds)).toContain("12 tests passed");
+    expect(messages[2].content).toBe("All checks passed.");
+  });
+
+  it.each(["approve", "deny", "timeout", "stop"])("retires Codex approval controls after %s", async action => {
+    vi.useFakeTimers();
+    const { sessionManager } = await import("./session-manager.js");
+    vi.mocked(getProject).mockReturnValueOnce({ ...getProject("ch1")!, backend: "codex" });
+    const channel = makeMockChannel();
+    testBackend.enqueueEvent({ type: "text_delta", text: "Approve this command." });
+    testBackend.enqueueEvent({ type: "tool_approval_request", requestId: "inline-approval", toolName: "Bash", input: { command: "npm test" } });
+    const running = sessionManager.sendMessage(channel, "test");
+    await vi.advanceTimersByTimeAsync(10);
+    const messages = (channel as unknown as { messages: Array<{ components?: unknown[] }> }).messages;
+    const approval = messages.find(m=>JSON.stringify(m.components).includes("approve:inline-approval"))!;
+    const runId = JSON.stringify((channel.send as ReturnType<typeof vi.fn>).mock.calls[0][0]).match(/card-details:([a-f0-9-]+)/)![1];
+    try {
+      if (action === "timeout") await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      else if (action === "stop") await sessionManager.stopTask("ch1", runId);
+      else sessionManager.resolveApproval("inline-approval", action as "approve" | "deny");
+      expect(approval.components).toEqual([]);
+      expect(sessionManager.resolveApproval("inline-approval", "approve")).toBe(false);
+    } finally {
+      testBackend.enqueueEvent({ type: "result", text: "end", isError: false });testBackend.endStream();
+      await running;vi.useRealTimers();
+    }
+  });
+
   it("streams text_delta events into Discord messages", async () => {
     const { sessionManager } = await import("./session-manager.js");
     const channel = makeMockChannel();
@@ -142,8 +185,8 @@ describe("SessionManager with MockAgentBackend", () => {
     testBackend.endStream();
     await sessionManager.sendMessage(channel, "test prompt");
     const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
-    expect(messages[1].content).toBe("修好了，這是正常排版。\n第二行");
-    expect(messages[0].content).toBe("");
+    expect(messages[0].content).toBe("修好了，這是正常排版。\n第二行");
+    expect(messages[1].content).toBe("");
   });
 
   it("passes the channel /model and /effort overrides to the DeepTutor backend", async () => {
@@ -181,12 +224,12 @@ describe("SessionManager with MockAgentBackend", () => {
     const done = sessionManager.sendMessage(channel, "hello");
     await new Promise((resolve) => setTimeout(resolve, 10));
     const messages = (channel as unknown as { messages: Array<{ content: string; embeds?: Array<{ toJSON(): { footer?: { text: string } } }> }> }).messages;
-    expect(JSON.stringify(messages[0].embeds)).toContain("actual-codex-model");
+    expect(JSON.stringify(messages.find(m => m.embeds?.length)?.embeds)).toContain("actual-codex-model");
     testBackend.enqueueEvent({ type: "result", text: "done", isError: false });
     testBackend.endStream();
     await done;
     expect(messages.filter(m => m.embeds?.length)).toHaveLength(1);
-    expect(JSON.stringify(messages[0].embeds)).toContain("actual-codex-model");
+    expect(JSON.stringify(messages.find(m => m.embeds?.length)?.embeds)).toContain("actual-codex-model");
   });
 
   it("keeps Codex reasoning out of the assistant answer", async () => {
@@ -199,7 +242,7 @@ describe("SessionManager with MockAgentBackend", () => {
     testBackend.endStream();
     await sessionManager.sendMessage(channel, "hello");
     const messages = (channel as unknown as { messages: Array<{ content: string }> }).messages;
-    expect(messages[1].content).toBe("Actual answer");
+    expect(messages[0].content).toBe("Actual answer");
     expect(JSON.stringify(messages)).not.toContain("internal reasoning");
   });
 
@@ -216,10 +259,10 @@ describe("SessionManager with MockAgentBackend", () => {
       const done = sessionManager.sendMessage(channel, "test");
       await vi.advanceTimersByTimeAsync(1600);
       const messages = (channel as unknown as { messages: Array<{ content: string; edit: ReturnType<typeof vi.fn> }> }).messages;
-      const progress = messages[0];
+      const progress = messages[1];
       expect(progress).toBeDefined();
       expect(JSON.stringify(progress)).toContain("npm test");
-      expect(messages[1].content).toBe("I will run tests.");
+      expect(messages[0].content).toBe("I will run tests.");
       const edits = progress!.edit.mock.calls.length;
       for (let i = 0; i < 5; i++) {
         testBackend.enqueueEvent({ type: "tool_start", toolName: "Bash", input: { id: `cmd-${i + 2}`, command: "npm test" } });
@@ -234,10 +277,10 @@ describe("SessionManager with MockAgentBackend", () => {
       await vi.advanceTimersByTimeAsync(10);
       await done;
       const runId = JSON.stringify(progress).match(/card-details:([a-f0-9-]+)/)![1];
-      expect(sessionManager.getTaskCard("ch1", runId)?.details()).toContain("❌");
+      expect(sessionManager.getTaskCard("ch1", runId)?.details()).toContain("Failed");
       expect(sessionManager.getTaskCard("ch1", runId)?.details()).toContain("npm test");
       expect(JSON.stringify(progress)).toContain("6 tool calls");
-      expect(messages).toHaveLength(2);
+      expect(messages).toHaveLength(3);
     } finally { vi.useRealTimers(); }
   });
 

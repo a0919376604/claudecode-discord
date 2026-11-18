@@ -16,6 +16,7 @@ const CODEX_TOOL_TYPE_MAP: Record<string, string> = {
   imageGeneration: "ImageGeneration",
   dynamicToolCall: "Tool",
   collabAgentToolCall: "Agent",
+  collabToolCall: "Agent",
 };
 
 /**
@@ -46,7 +47,15 @@ export function notificationToEvent(
   if (method === "item/agentMessage/delta") {
     const delta = p && typeof p.delta === "string" ? p.delta : null;
     if (delta === null) return null;
-    return { type: "text_delta", text: delta };
+    return { type: "text_delta", text: delta,
+      ...(typeof p?.itemId === "string" ? { itemId: p.itemId } : {}),
+      ...(typeof p?.phase === "string" ? { phase: p.phase } : {}),
+    };
+  }
+
+  if (method === "item/commandExecution/outputDelta") {
+    if (typeof p?.itemId !== "string" || typeof p.delta !== "string") return null;
+    return { type: "tool_output_delta", itemId: p.itemId, text: p.delta };
   }
 
   if (method === "item/reasoning/textDelta" || method === "item/reasoning/summaryTextDelta") {
@@ -58,6 +67,11 @@ export function notificationToEvent(
   if (method === "item/started" || method === "item/completed") {
     const item = p && (p.item as Record<string, unknown> | undefined);
     if (!item || typeof item.type !== "string") return null;
+    if (method === "item/completed" && item.type === "agentMessage" && typeof item.id === "string" && typeof item.text === "string") {
+      return { type: "text_complete", itemId: item.id, text: item.text,
+        ...(typeof item.phase === "string" ? { phase: item.phase } : {}),
+      };
+    }
     // Only emit tool_start for known tool types. Non-tool items
     // (userMessage, agentMessage, reasoning, etc.) also fire item/started
     // but are surfaced via their own delta/stream notifications.
@@ -66,7 +80,7 @@ export function notificationToEvent(
     // Strip `type` and pass the rest as input
     const { type: _t, ...input } = item;
     if (method === "item/completed") {
-      const ok = item.status !== "failed" && item.status !== "declined" &&
+      const ok = (item.status === undefined || item.status === "completed") &&
         item.success !== false && !item.error &&
         !(typeof item.exitCode === "number" && item.exitCode !== 0);
       return { type: "tool_end", toolName, ok, input };

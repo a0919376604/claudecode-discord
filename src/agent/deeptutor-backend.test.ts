@@ -4,7 +4,8 @@ import { PassThrough } from "node:stream";
 import type { BackendStartOptions, NormalizedEvent } from "./backend.js";
 import type { Tutor } from "../db/types.js";
 
-const { spawn, getTutor, setTutorSession } = vi.hoisted(() => ({ spawn: vi.fn(), getTutor: vi.fn(), setTutorSession: vi.fn() }));
+const { spawn, getTutor, setTutorSession, ensureFreshCredentials } = vi.hoisted(() => ({ spawn: vi.fn(), getTutor: vi.fn(), setTutorSession: vi.fn(), ensureFreshCredentials: vi.fn(async () => ({ status: "fresh" })) }));
+vi.mock("../claude/credentials-refresher.js", () => ({ ensureFreshCredentials }));
 vi.mock("node:child_process", () => ({ spawn }));
 vi.mock("../db/tutors.js", () => ({ getTutor, setTutorSession }));
 vi.mock("../utils/config.js", () => ({ getConfig: () => ({ DEEPTUTOR_BIN: "deeptutor" }) }));
@@ -59,6 +60,13 @@ describe("DeepTutorBackend", () => {
     const events = await collect();
     expect(events.at(-1)).toMatchObject({ type: "result", isError: true });
     expect(setTutorSession).not.toHaveBeenCalled();
+  });
+  it("refreshes Claude credentials before spawning DeepTutor (scheduled pushes after sleep hit an expired token)", async () => {
+    const order: string[] = [];
+    ensureFreshCredentials.mockImplementationOnce(async () => { order.push("refresh"); return { status: "refreshed" }; });
+    child(p => { order.push("spawn"); p.stdout.write('{"type":"done"}\n'); });
+    await collect();
+    expect(order).toEqual(["refresh", "spawn"]);
   });
   it("resumes with stored session id and ignores opts.resumeSessionId", async () => {
     getTutor.mockReturnValue({ ...tutor, deeptutor_session_id: "s1" });

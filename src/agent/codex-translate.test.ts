@@ -2,6 +2,25 @@ import { describe, it, expect } from "vitest";
 import { notificationToEvent } from "./codex-translate.js";
 
 describe("notificationToEvent", () => {
+  it("retains text item boundaries and authoritative completed text", () => {
+    expect(notificationToEvent({ method: "item/agentMessage/delta", params: {
+      itemId: "answer-1", delta: "Hello", phase: "commentary",
+    } })).toEqual({ type: "text_delta", text: "Hello", itemId: "answer-1", phase: "commentary" });
+    expect(notificationToEvent({ method: "item/completed", params: { item: {
+      type: "agentMessage", id: "answer-1", text: "Hello world", phase: "final_answer",
+    } } })).toEqual({ type: "text_complete", itemId: "answer-1", text: "Hello world", phase: "final_answer" });
+  });
+  it("translates command output only when it can be paired with an item", () => {
+    expect(notificationToEvent({ method: "item/commandExecution/outputDelta", params: {
+      itemId: "cmd-1", delta: "8 tests passed\n",
+    } })).toEqual({ type: "tool_output_delta", itemId: "cmd-1", text: "8 tests passed\n" });
+    expect(notificationToEvent({ method: "item/commandExecution/outputDelta", params: { delta: "unscoped" } })).toBeNull();
+  });
+  it("does not treat an interrupted tool as successful", () => {
+    expect(notificationToEvent({ method: "item/completed", params: { item: {
+      type: "commandExecution", id: "cmd-1", status: "interrupted",
+    } } })).toMatchObject({ type: "tool_end", ok: false });
+  });
   it("accepts real plan steps but ignores malformed progress", () => {
     const plan = [{ step: "Inspect", status: "completed" }, { step: "Build", status: "inProgress" }];
     expect(notificationToEvent({ method: "turn/plan/updated", params: { plan } })).toEqual({ type: "plan_update", steps: plan });
