@@ -9,6 +9,10 @@ import { localTimeToUtcCron } from "../../tutor/schedule.js";
 import { buildDailyPrompt, buildIntakePrompt, buildWeeklyPrompt } from "../../tutor/prompts.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { L } from "../../utils/i18n.js";
+import { getConfig } from "../../utils/config.js";
+import { formatProgressMap, readMasteryState } from "../../tutor/progress.js";
+import os from "node:os";
+import path from "node:path";
 
 export const data = new SlashCommandBuilder()
   .setName("tutor").setDescription(L("Configure your DeepTutor tutor", "DeepTutor 튜터 설정"))
@@ -26,6 +30,7 @@ export const data = new SlashCommandBuilder()
     .addStringOption(o => o.setName("time").setDescription(L("Local push time, HH:MM", "현지 알림 시간 HH:MM")).setRequired(true))
     .addStringOption(o => o.setName("timezone").setDescription(L("Timezone (default: keep current)", "시간대 (기본: 현재 유지)")).setMaxLength(100)))
   .addSubcommand(sub => sub.setName("show").setDescription(L("Show tutor settings and next pushes", "튜터 설정과 다음 알림 보기")))
+  .addSubcommand(sub => sub.setName("progress").setDescription(L("Show your progress map", "학습 진도 지도 보기")))
   .addSubcommand(sub => sub.setName("pause").setDescription(L("Pause tutor pushes; setup resumes them", "튜터 알림 일시정지; setup으로 재개")))
   .addSubcommand(sub => sub.setName("reset").setDescription(L("Start a new learning path on the next message", "다음 메시지에서 새 학습 경로 시작")));
 
@@ -154,6 +159,19 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     upsertTutor({ ...profile, push_time: time, timezone });
     const updated = getTutor(channelId)!;
     await interaction.editReply({ embeds: [tutorEmbed(updated, scheduleTutorCrons(updated, exprs, now))] });
+    return;
+  }
+  if (sub === "progress") {
+    const map = tutor.deeptutor_session_id
+      ? formatProgressMap(readMasteryState(getConfig().DEEPTUTOR_HOME ?? path.join(os.homedir(), ".deeptutor"), tutor.deeptutor_session_id))
+      : null;
+    if (!map) {
+      await interaction.editReply({ content: L("No learning path yet — the tutor builds one during its first lesson.", "아직 학습 경로가 없습니다 — 튜터가 첫 수업에서 만듭니다.") });
+      return;
+    }
+    // Embed descriptions cap at 4096 chars; a very long outline is cut rather than failing the reply.
+    const body = map.length > 3900 ? `${map.slice(0, 3900)}\n…` : map;
+    await interaction.editReply({ embeds: [new EmbedBuilder().setTitle(L("🗺️ Progress map", "🗺️ 학습 진도 지도")).setColor(0x5865f2).setDescription("```\n" + body + "\n```")] });
     return;
   }
   if (sub === "show") {

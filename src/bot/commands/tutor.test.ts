@@ -8,6 +8,9 @@ vi.mock("../../db/tutors.js", () => ({ getTutor: vi.fn(), upsertTutor: vi.fn(), 
 vi.mock("../../db/crons.js", () => ({ insertCron: vi.fn(), listCronsByChannel: vi.fn(), deleteCronById: vi.fn(), countCronsByChannel: vi.fn() }));
 vi.mock("../../claude/session-manager.js", () => ({ sessionManager: { isActive: vi.fn(), sendMessage: vi.fn(async () => {}) } }));
 vi.mock("../../utils/i18n.js", () => ({ L: (en: string) => en }));
+const { readMasteryState } = vi.hoisted(() => ({ readMasteryState: vi.fn() }));
+vi.mock("../../tutor/progress.js", async (orig) => ({ ...(await orig<typeof import("../../tutor/progress.js")>()), readMasteryState }));
+vi.mock("../../utils/config.js", () => ({ getConfig: () => ({ DEEPTUTOR_HOME: "/dt-home" }) }));
 import { getProject, setBackend, clearSessionId } from "../../db/database.js";
 import { getTutor, upsertTutor, setTutorSession } from "../../db/tutors.js";
 import { insertCron, listCronsByChannel, deleteCronById, countCronsByChannel } from "../../db/crons.js";
@@ -163,9 +166,9 @@ describe("/tutor", () => {
     await execute(inter);
     expect(inter.editReply).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("/tutor setup") }));
   });
-  it("registers the five subcommands and study-time bounds", () => {
+  it("registers the six subcommands and study-time bounds", () => {
     const schema = data.toJSON();
-    expect(schema.options?.map(option => option.name)).toEqual(["setup", "time", "show", "pause", "reset"]);
+    expect(schema.options?.map(option => option.name)).toEqual(["setup", "time", "show", "progress", "pause", "reset"]);
     const setup = schema.options?.[0];
     if (setup?.type !== 1) throw new Error("missing setup subcommand");
     expect(setup.options?.find(option => option.name === "daily_minutes")).toMatchObject({ min_value: 5, max_value: 120 });
@@ -195,5 +198,22 @@ describe("/tutor", () => {
     storedTutor = { ...configuredTutor, level: "N5", deadline: "2027-05", daily_minutes: 20, menu: "games", push_time: "21:30", timezone: "Asia/Tokyo", language: "ja" };
     await execute(interaction("setup"));
     expect(storedTutor).toMatchObject({ level: "N5", deadline: "2027-05", daily_minutes: 20, menu: "games", push_time: "21:30", timezone: "Asia/Tokyo", language: "ja" });
+  });
+  it("progress shows the mastery map read from the tutor's DeepTutor path", async () => {
+    storedTutor = { ...configuredTutor, deeptutor_session_id: "p1" };
+    readMasteryState.mockReturnValue({ name: "JLPT N5", modules: [{ name: "Hiragana", knowledge_points: [{ id: "k0", name: "Seion", type: "memory" }] }], mastery_levels: { k0: 0.78 } });
+    const inter = interaction("progress");
+    await execute(inter);
+    expect(readMasteryState).toHaveBeenCalledWith("/dt-home", "p1");
+    const reply = JSON.stringify(vi.mocked(inter.editReply).mock.calls);
+    expect(reply).toContain("Seion");
+    expect(reply).toContain("78%");
+  });
+  it("progress before the tutor has a learning path explains why there is no map", async () => {
+    storedTutor = { ...configuredTutor, deeptutor_session_id: null };
+    const inter = interaction("progress");
+    await execute(inter);
+    expect(readMasteryState).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(inter.editReply).mock.calls)).toContain("No learning path yet");
   });
 });

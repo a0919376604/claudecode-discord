@@ -214,6 +214,8 @@ class SessionManager {
     let hasResult = false;
     let model: string | undefined;
     let lastModel = project.last_model ?? null;
+    // Codex ignores /effort, so only label it where it actually applies.
+    const effortTag = project.backend !== "codex" ? ` · effort: ${project.effort ?? "default"}` : "";
     // Timestamp of the last assistant-text streaming edit. Used to decide
     // whether the post-text phase has been silent long enough that we should
     // surface a separate "still working" progress message.
@@ -299,7 +301,7 @@ class SessionManager {
         lastActivity,
         Date.now() - startTime,
         toolUseCount,
-      ) + (model ? ` | ${model}` : "");
+      ) + (model ? ` | ${model}${effortTag}` : "");
       const action = decideProgressAction({
         hasTextOutput,
         lastTextTime,
@@ -698,7 +700,7 @@ class SessionManager {
                   Date.now() - startTime,
                   getConfig().SHOW_COST,
                   isError,
-                  model,
+                  model && model + effortTag,
                   toolUseCount,
                 );
                 resultIsError = isError;
